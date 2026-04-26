@@ -1,0 +1,9 @@
+pandas
+numpy
+tifffile
+matplotlib
+seaborn
+streamlit
+aicspylibczi
+scikit-image
+scipy

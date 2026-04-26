@@ -1,0 +1,22 @@
+# Ignore large raw image files and intermediate tracks
+*.czi
+*.csv
+*.png
+*.jpg
+*.tif
+*.tiff
+*.xml
+*.pptx
+*.ppt
+*.key
+
+# Ignore python caches and virtual environments
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+.env
+
+# Ignore specific local dataset folders
+0714*
+*HF*

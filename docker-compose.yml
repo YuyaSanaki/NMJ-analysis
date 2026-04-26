@@ -1,0 +1,20 @@
+services:
+  single-image-nmj-analysis:
+    build: .
+    volumes:
+      - .:/app
+    ports:
+      - "8501:8501"
+    environment:
+      - PYTHONUNBUFFERED=1
+    command: streamlit run BTX.py
+
+  multiple-image-nmj-analysis:
+    build: .
+    volumes:
+      - .:/app
+    ports:
+      - "8502:8501"
+    environment:
+      - PYTHONUNBUFFERED=1
+    command: streamlit run BTX_batch.py
