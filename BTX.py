@@ -288,6 +288,19 @@ if st.button("🚀 Process Pipeline", type="primary"):
             sig_star = "***" if fisher_p < 0.001 else "**" if fisher_p < 0.01 else "*" if fisher_p < 0.05 else "ns"
             st.markdown(f"- **Fisher's Exact P-Value:** `{fisher_p:.4g}` {sig_star} *(Measures if spot recruitment to Muscle is statistically associated with recruitment to Neuron)*")
 
+            # Pre-calculate spatial classifications before saving downstream
+            def classify_quadrant(row):
+                if row['Dist_to_Muscle_um'] <= distance_threshold_um and row['Dist_to_Neuron_um'] <= distance_threshold_um:
+                    return 'NMJ'
+                elif row['Dist_to_Muscle_um'] <= distance_threshold_um:
+                    return 'Muscle Only'
+                elif row['Dist_to_Neuron_um'] <= distance_threshold_um:
+                    return 'Neuron Only'
+                else:
+                    return 'Orphaned'
+            
+            df_spots['BTX signal class'] = df_spots.apply(classify_quadrant, axis=1)
+
             # Save CSV
             out_csv = os.path.join(folder_path, f"{selected_czi.replace('.czi', '')}_analysis.csv")
             df_spots.to_csv(out_csv, index=False)
@@ -376,18 +389,6 @@ if st.button("🚀 Process Pipeline", type="primary"):
             ax_intensity_kde.set_ylabel('Probability Density')
             
             # Graph 1: Scatter NMJ
-            def classify_quadrant(row):
-                if row['Dist_to_Muscle_um'] <= distance_threshold_um and row['Dist_to_Neuron_um'] <= distance_threshold_um:
-                    return 'NMJ'
-                elif row['Dist_to_Muscle_um'] <= distance_threshold_um:
-                    return 'Muscle Only'
-                elif row['Dist_to_Neuron_um'] <= distance_threshold_um:
-                    return 'Neuron Only'
-                else:
-                    return 'Orphaned'
-            
-            df_spots['BTX signal class'] = df_spots.apply(classify_quadrant, axis=1)
-            
             sns.scatterplot(
                 data=df_spots, x='Dist_to_Muscle_um', y='Dist_to_Neuron_um',
                 hue='BTX signal class', palette={'NMJ': 'red', 'Muscle Only': 'green', 'Neuron Only': 'blue', 'Orphaned': 'gray'}, ax=ax_scatter

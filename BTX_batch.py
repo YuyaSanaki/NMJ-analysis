@@ -383,6 +383,19 @@ if run_current or run_all:
             from scipy.stats import fisher_exact
             _, fisher_p = fisher_exact([[nmj_count, near_n_only], [near_m_only, orphaned]])
             
+            # Pre-calculate spatial classifications before saving downstream
+            def classify_quadrant(row):
+                if row['Dist_to_Muscle_um'] <= distance_threshold_um and row['Dist_to_Neuron_um'] <= distance_threshold_um:
+                    return 'NMJ'
+                elif row['Dist_to_Muscle_um'] <= distance_threshold_um:
+                    return 'Muscle Only'
+                elif row['Dist_to_Neuron_um'] <= distance_threshold_um:
+                    return 'Neuron Only'
+                else:
+                    return 'Orphaned'
+            
+            df_spots['BTX signal class'] = df_spots.apply(classify_quadrant, axis=1)
+            
             out_csv = os.path.join(current_d, f"{czi_file.replace('.czi', '')}_analysis.csv")
             df_spots.to_csv(out_csv, index=False)
             
@@ -486,18 +499,6 @@ if run_current or run_all:
             ax_intensity_kde.set_ylabel('Probability Density')
             
             # Graph 1: Scatter NMJ
-            def classify_quadrant(row):
-                if row['Dist_to_Muscle_um'] <= distance_threshold_um and row['Dist_to_Neuron_um'] <= distance_threshold_um:
-                    return 'NMJ'
-                elif row['Dist_to_Muscle_um'] <= distance_threshold_um:
-                    return 'Muscle Only'
-                elif row['Dist_to_Neuron_um'] <= distance_threshold_um:
-                    return 'Neuron Only'
-                else:
-                    return 'Orphaned'
-            
-            df_spots['BTX signal class'] = df_spots.apply(classify_quadrant, axis=1)
-            
             sns.scatterplot(
                 data=df_spots, x='Dist_to_Muscle_um', y='Dist_to_Neuron_um',
                 hue='BTX signal class', palette={'NMJ': 'red', 'Muscle Only': 'green', 'Neuron Only': 'blue', 'Orphaned': 'gray'}, ax=ax_scatter
