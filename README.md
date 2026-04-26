@@ -14,6 +14,7 @@ This project runs locally entirely inside Docker, utilizing `Streamlit` to gener
 1. Start the Docker containers:
 ```bash
 docker compose up --build -d
+docker compose up -d
 ```
 2. Navigate to your desired pipeline in the browser:
    * **Single Image Mode:** `http://localhost:8501`
