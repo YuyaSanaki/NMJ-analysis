@@ -265,6 +265,13 @@ if st.button("🚀 Process Pipeline", type="primary"):
             # Outputs
             nmj_count = df_spots['is_NMJ'].sum()
             formation_rate = nmj_count / total_spots * 100
+            
+            near_m_only = len(df_spots[(df_spots['Dist_to_Muscle_um'] <= distance_threshold_um) & (df_spots['Dist_to_Neuron_um'] > distance_threshold_um)])
+            near_n_only = len(df_spots[(df_spots['Dist_to_Neuron_um'] <= distance_threshold_um) & (df_spots['Dist_to_Muscle_um'] > distance_threshold_um)])
+            orphaned = len(df_spots[(df_spots['Dist_to_Muscle_um'] > distance_threshold_um) & (df_spots['Dist_to_Neuron_um'] > distance_threshold_um)])
+            
+            from scipy.stats import fisher_exact
+            _, fisher_p = fisher_exact([[nmj_count, near_n_only], [near_m_only, orphaned]])
 
             # --- Visualisation ---
             st.divider()
@@ -273,6 +280,13 @@ if st.button("🚀 Process Pipeline", type="primary"):
             sm1.metric("Total BTX Spots", total_spots)
             sm2.metric(f"NMJs (≤ {distance_threshold_um} µm)", nmj_count)
             sm3.metric("NMJ Formation Rate", f"{formation_rate:.2f}%")
+            
+            st.markdown("### Proximity Statistics")
+            st.markdown(f"- **Near Muscle Only:** {near_m_only}")
+            st.markdown(f"- **Near Neuron Only:** {near_n_only}")
+            st.markdown(f"- **Orphaned (Far from both):** {orphaned}")
+            sig_star = "***" if fisher_p < 0.001 else "**" if fisher_p < 0.01 else "*" if fisher_p < 0.05 else "ns"
+            st.markdown(f"- **Fisher's Exact P-Value:** `{fisher_p:.4g}` {sig_star} *(Measures if spot recruitment to Muscle is statistically associated with recruitment to Neuron)*")
 
             # Save CSV
             out_csv = os.path.join(folder_path, f"{selected_czi.replace('.czi', '')}_analysis.csv")
@@ -362,13 +376,27 @@ if st.button("🚀 Process Pipeline", type="primary"):
             ax_intensity_kde.set_ylabel('Probability Density')
             
             # Graph 1: Scatter NMJ
+            def classify_quadrant(row):
+                if row['Dist_to_Muscle_um'] <= distance_threshold_um and row['Dist_to_Neuron_um'] <= distance_threshold_um:
+                    return 'NMJ'
+                elif row['Dist_to_Muscle_um'] <= distance_threshold_um:
+                    return 'Muscle Only'
+                elif row['Dist_to_Neuron_um'] <= distance_threshold_um:
+                    return 'Neuron Only'
+                else:
+                    return 'Orphaned'
+            
+            df_spots['Quadrant'] = df_spots.apply(classify_quadrant, axis=1)
+            
             sns.scatterplot(
                 data=df_spots, x='Dist_to_Muscle_um', y='Dist_to_Neuron_um',
-                hue='is_NMJ', palette={True: 'red', False: 'gray'}, ax=ax_scatter
+                hue='Quadrant', palette={'NMJ': 'red', 'Muscle Only': 'green', 'Neuron Only': 'blue', 'Orphaned': 'gray'}, ax=ax_scatter
             )
             ax_scatter.axvline(x=distance_threshold_um, color='black', linestyle='--')
             ax_scatter.axhline(y=distance_threshold_um, color='black', linestyle='--')
-            ax_scatter.set_title('NMJ Proximity Analysis')
+            
+            sig_star = "***" if fisher_p < 0.001 else "**" if fisher_p < 0.01 else "*" if fisher_p < 0.05 else "ns"
+            ax_scatter.set_title(f'NMJ Proximity Analysis (Fisher P = {fisher_p:.4f} {sig_star})')
             ax_scatter.set_xlabel('Distance to Muscle (μm)')
             ax_scatter.set_ylabel('Distance to Neuron (μm)')
 

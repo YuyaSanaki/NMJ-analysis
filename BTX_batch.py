@@ -203,25 +203,49 @@ with col_p3:
     distance_threshold_um = st.number_input("Functional NMJ Boundary (μm)", value=1.0, step=0.1)
 
 # --- 4. Run Batch Pipeline ---
-if st.button("🚀 Run Batch Analysis", type="primary"):
+col_run1, col_run2 = st.columns(2)
+run_current = col_run1.button("🚀 Run Batch Analysis (Current Folder)", type="primary")
+run_all = col_run2.button("🚀 Run Batch Analysis (ALL Folders)", type="secondary", help="Executes natively on every tracked folder using your active Global Template Mapping")
+
+if run_current or run_all:
     all_spots_data = []
     all_file_stats = []
     
     progress = st.progress(0)
     status = st.empty()
+    
+    target_dirs = [folder_path] if run_current else [os.path.join(base_dir, d) for d in folders]
+    
+    all_target_czis = []
+    for target_d in target_dirs:
+        for f in os.listdir(target_d):
+            if f.endswith('.czi'):
+                all_target_czis.append((target_d, f))
 
-    for i, czi_file in enumerate(czi_files):
-        czi_path = os.path.join(folder_path, czi_file)
-        conf = file_configs[czi_file]
+    for i, (current_d, czi_file) in enumerate(all_target_czis):
+        czi_path = os.path.join(current_d, czi_file)
+        
+        # Determine config logic based on whether we exist natively in the actively mapped UI window
+        if current_d == folder_path and czi_file in file_configs:
+            conf = file_configs[czi_file]
+        else:
+            n_ch_temp, px_size_temp = fast_czi_meta(czi_path)
+            conf = {
+                "muscle": min(st.session_state.get("g_m", 0), n_ch_temp-1),
+                "neuron": min(st.session_state.get("g_n", 1), n_ch_temp-1),
+                "btx": min(st.session_state.get("g_b", 3), n_ch_temp-1),
+                "pixel_size": float(px_size_temp),
+                "skip": False
+            }
         
         if conf.get("skip", False):
-            status.write(f"⏭️ **Skipping:** `{czi_file}` (Marked as Excluded)")
-            progress.progress((i + 1) / len(czi_files))
+            status.write(f"⏭️ **Skipping:** `{current_d}/{czi_file}` (Marked as Excluded)")
+            progress.progress((i + 1) / len(all_target_czis))
             continue
             
         pixel_size = conf['pixel_size']
         
-        status.write(f"🔄 **Processing ({i+1}/{len(czi_files)}):** `{czi_file}` ...")
+        status.write(f"🔄 **Processing ({i+1}/{len(all_target_czis)}):** `{current_d}/{czi_file}` ...")
         
         try:
             # Extract channels
@@ -351,7 +375,15 @@ if st.button("🚀 Run Batch Analysis", type="primary"):
             nmj_count = df_spots['is_NMJ'].sum()
             formation_rate = nmj_count / total_spots * 100
             
-            out_csv = os.path.join(folder_path, f"{czi_file.replace('.czi', '')}_analysis.csv")
+            near_m_only = len(df_spots[(df_spots['Dist_to_Muscle_um'] <= distance_threshold_um) & (df_spots['Dist_to_Neuron_um'] > distance_threshold_um)])
+            near_n_only = len(df_spots[(df_spots['Dist_to_Neuron_um'] <= distance_threshold_um) & (df_spots['Dist_to_Muscle_um'] > distance_threshold_um)])
+            orphaned = len(df_spots[(df_spots['Dist_to_Muscle_um'] > distance_threshold_um) & (df_spots['Dist_to_Neuron_um'] > distance_threshold_um)])
+            
+            # Fisher's Exact Test to determine if proximity to Neuron is associated with proximity to Muscle
+            from scipy.stats import fisher_exact
+            _, fisher_p = fisher_exact([[nmj_count, near_n_only], [near_m_only, orphaned]])
+            
+            out_csv = os.path.join(current_d, f"{czi_file.replace('.czi', '')}_analysis.csv")
             df_spots.to_csv(out_csv, index=False)
             
             # Tag source file and push to master payload
@@ -361,8 +393,12 @@ if st.button("🚀 Run Batch Analysis", type="primary"):
             all_file_stats.append({
                 "File": czi_file,
                 "Total Spots": total_spots,
-                "NMJs": nmj_count,
-                "Formation Rate (%)": formation_rate
+                "NMJs (Both)": nmj_count,
+                "Near Muscle Only": near_m_only,
+                "Near Neuron Only": near_n_only,
+                "Orphaned": orphaned,
+                "Formation Rate (%)": formation_rate,
+                "Fisher P-Value": fisher_p
             })
 
             # Normalize images for composite display using percentiles (Auto Contrast)
@@ -449,13 +485,27 @@ if st.button("🚀 Run Batch Analysis", type="primary"):
             ax_intensity_kde.set_ylabel('Probability Density')
             
             # Graph 1: Scatter NMJ
+            def classify_quadrant(row):
+                if row['Dist_to_Muscle_um'] <= distance_threshold_um and row['Dist_to_Neuron_um'] <= distance_threshold_um:
+                    return 'NMJ'
+                elif row['Dist_to_Muscle_um'] <= distance_threshold_um:
+                    return 'Muscle Only'
+                elif row['Dist_to_Neuron_um'] <= distance_threshold_um:
+                    return 'Neuron Only'
+                else:
+                    return 'Orphaned'
+            
+            df_spots['Quadrant'] = df_spots.apply(classify_quadrant, axis=1)
+            
             sns.scatterplot(
                 data=df_spots, x='Dist_to_Muscle_um', y='Dist_to_Neuron_um',
-                hue='is_NMJ', palette={True: 'red', False: 'gray'}, ax=ax_scatter
+                hue='Quadrant', palette={'NMJ': 'red', 'Muscle Only': 'green', 'Neuron Only': 'blue', 'Orphaned': 'gray'}, ax=ax_scatter
             )
             ax_scatter.axvline(x=distance_threshold_um, color='black', linestyle='--')
             ax_scatter.axhline(y=distance_threshold_um, color='black', linestyle='--')
-            ax_scatter.set_title('NMJ Proximity Analysis')
+            
+            sig_star = "***" if fisher_p < 0.001 else "**" if fisher_p < 0.01 else "*" if fisher_p < 0.05 else "ns"
+            ax_scatter.set_title(f'NMJ Proximity Analysis (Fisher P = {fisher_p:.4f} {sig_star})')
             ax_scatter.set_xlabel('Distance to Muscle (μm)')
             ax_scatter.set_ylabel('Distance to Neuron (μm)')
 
@@ -503,14 +553,14 @@ if st.button("🚀 Run Batch Analysis", type="primary"):
             st.pyplot(fig)
             
             # Save visual
-            out_img = os.path.join(folder_path, f"{czi_file.replace('.czi', '')}_NMJ_Plot.png")
+            out_img = os.path.join(current_d, f"{czi_file.replace('.czi', '')}_NMJ_Plot.png")
             fig.savefig(out_img, bbox_inches='tight')
             plt.close(fig) # Prevent Matplotlib from leaking memory during large batches!
             
         except Exception as e:
             st.warning(f"Analysis failed organically on {czi_file}: {e}")
             
-        progress.progress((i + 1) / len(czi_files))
+        progress.progress((i + 1) / len(all_target_czis))
         
     # --- AFTER BATCH COMPLETES ---
     status.write("✅ **Batch Processing Complete!**")
@@ -522,7 +572,11 @@ if st.button("🚀 Run Batch Analysis", type="primary"):
         cols.insert(0, cols.pop(cols.index('SOURCE_IMAGE')))
         master_df = master_df.reindex(columns=cols)
         
-        master_csv = os.path.join(folder_path, "BATCH_MASTER_RESULTS.csv")
+        if run_all:
+            master_csv = os.path.join(".", "ALL_FOLDERS_MASTER_RESULTS.csv")
+        else:
+            master_csv = os.path.join(folder_path, "BATCH_MASTER_RESULTS.csv")
+            
         master_df.to_csv(master_csv, index=False)
         st.success(f"Aggregate Master dataset uniquely saved: `{master_csv}`")
         
