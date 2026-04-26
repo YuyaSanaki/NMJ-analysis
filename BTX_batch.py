@@ -388,6 +388,7 @@ if run_current or run_all:
             
             # Tag source file and push to master payload
             df_spots['SOURCE_IMAGE'] = czi_file
+            df_spots['SOURCE_FOLDER'] = os.path.basename(os.path.normpath(current_d))
             all_spots_data.extend(df_spots.to_dict('records'))
             
             all_file_stats.append({
@@ -567,18 +568,80 @@ if run_current or run_all:
     
     if all_spots_data:
         master_df = pd.DataFrame(all_spots_data)
-        # Move SOURCE_IMAGE column to the front
+        # Move SOURCE_IMAGE and SOURCE_FOLDER columns to the front
         cols = master_df.columns.tolist()
         cols.insert(0, cols.pop(cols.index('SOURCE_IMAGE')))
+        cols.insert(0, cols.pop(cols.index('SOURCE_FOLDER')))
         master_df = master_df.reindex(columns=cols)
         
         if run_all:
             master_csv = os.path.join(".", "ALL_FOLDERS_MASTER_RESULTS.csv")
+            master_png = os.path.join(".", "ALL_FOLDERS_SUMMARY.png")
         else:
             master_csv = os.path.join(folder_path, "BATCH_MASTER_RESULTS.csv")
+            master_png = os.path.join(folder_path, "BATCH_SUMMARY.png")
             
         master_df.to_csv(master_csv, index=False)
         st.success(f"Aggregate Master dataset uniquely saved: `{master_csv}`")
+        
+        st.subheader("📈 Batch Statistical Summary")
+        
+        # Create a massive 5-panel master figure
+        fig, axes = plt.subplots(3, 2, figsize=(24, 28))
+        
+        # 1. NMJ Proximity (Bar plot of BTX Signal Class Proportions)
+        ax_class = axes[0, 0]
+        class_counts = master_df.groupby(['SOURCE_IMAGE', 'BTX signal class']).size().unstack(fill_value=0)
+        class_props = class_counts.div(class_counts.sum(axis=1), axis=0) * 100
+        target_cols = [c for c in ['NMJ', 'Muscle Only', 'Neuron Only', 'Orphaned'] if c in class_props.columns]
+        class_props[target_cols].plot(kind='bar', stacked=True, ax=ax_class, 
+                            color={'NMJ':'red', 'Muscle Only':'green', 'Neuron Only':'blue', 'Orphaned':'gray'})
+        ax_class.set_title("1. BTX Signal Class Proportional Distribution")
+        ax_class.set_ylabel("Percentage (%)")
+        ax_class.tick_params(axis='x', rotation=90)
+        
+        # We exclusively analyze functional NMJs for specific biological metrics to prevent noisy background/orphaned spots from skewing true junction data.
+        df_nmjs = master_df[master_df['is_NMJ'] == True]
+        
+        # 2. NMJ Size
+        ax_size = axes[0, 1]
+        if len(df_nmjs) > 0:
+            sns.violinplot(data=df_nmjs, x='SOURCE_IMAGE', y='RADIUS', ax=ax_size, hue='SOURCE_FOLDER', inner='quartile')
+        ax_size.set_title("2. Functional NMJ Size (Radius μm)")
+        ax_size.tick_params(axis='x', rotation=90)
+        
+        # 3. Circularity
+        ax_circ = axes[1, 0]
+        if len(df_nmjs) > 0:
+            sns.violinplot(data=df_nmjs, x='SOURCE_IMAGE', y='CIRCULARITY', ax=ax_circ, hue='SOURCE_FOLDER', inner='quartile')
+        ax_circ.set_title("3. Functional NMJ Circularity")
+        ax_circ.set_ylim(0, 1)
+        ax_circ.tick_params(axis='x', rotation=90)
+        
+        # 4. Innervation Overlap
+        ax_innerv = axes[1, 1]
+        if len(df_nmjs) > 0:
+            sns.violinplot(data=df_nmjs, x='SOURCE_IMAGE', y='INNERVATION_OVERLAP_PCT', ax=ax_innerv, hue='SOURCE_FOLDER', inner='quartile')
+        ax_innerv.set_title("4. Functional NMJ Innervation (%)")
+        ax_innerv.set_ylim(-10, 110)
+        ax_innerv.tick_params(axis='x', rotation=90)
+        
+        # 5. Intensity
+        ax_int = axes[2, 0]
+        if len(df_nmjs) > 0:
+            sns.violinplot(data=df_nmjs, x='SOURCE_IMAGE', y='MEAN_INTENSITY', ax=ax_int, hue='SOURCE_FOLDER', inner='quartile')
+        ax_int.set_title("5. Functional NMJ Receptor Intensity")
+        ax_int.tick_params(axis='x', rotation=90)
+        
+        # Format axes
+        axes[2, 1].axis('off') # Hide empty 6th panel
+        
+        plt.tight_layout()
+        st.pyplot(fig)
+        fig.savefig(master_png, bbox_inches='tight')
+        plt.close(fig)
+        
+        st.success(f"Aggregate Dashboard generated: `{master_png}`")
         
     if all_file_stats:
         st.subheader("📊 Batch Summary Metrics")
