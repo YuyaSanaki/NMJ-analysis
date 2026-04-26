@@ -162,7 +162,7 @@ if len(czi_files) > 0:
 
 st.divider()
 
-@st.cache_data(show_spinner=False)
+# Removed st.cache_data decorator to prevent catastrophic Out-Of-Memory (OOM) accumulation during massive multi-GB dataset runs
 def load_czi_image(path):
     czi = aicspylibczi.CziFile(path)
     img, _ = czi.read_image()
@@ -551,9 +551,7 @@ if run_current or run_all:
                     ax_comp_arrows.annotate('', xy=(target_x, target_y), xytext=(start_x, start_y),
                                       arrowprops=dict(arrowstyle="-|>", color='white', lw=1.5))
 
-            st.pyplot(fig)
-            
-            # Save visual
+            # Save visual directly to disk, completely bypassing the Streamlit frontend DOM to prevent DOM payload crash
             out_img = os.path.join(current_d, f"{czi_file.replace('.czi', '')}_NMJ_Plot.png")
             fig.savefig(out_img, bbox_inches='tight')
             plt.close(fig) # Prevent Matplotlib from leaking memory during large batches!
