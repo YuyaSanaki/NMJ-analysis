@@ -596,13 +596,22 @@ if run_current or run_all:
         axes[2, 1].axis('off') # Hide empty 6th panel
         
         # 1. NMJ Proximity Scatterplot
+        from scipy.stats import fisher_exact
+        total_nmj = len(master_df[master_df['BTX signal class'] == 'NMJ'])
+        total_m_only = len(master_df[master_df['BTX signal class'] == 'Muscle Only'])
+        total_n_only = len(master_df[master_df['BTX signal class'] == 'Neuron Only'])
+        total_orph = len(master_df[master_df['BTX signal class'] == 'Orphaned'])
+        _, global_fisher_p = fisher_exact([[total_nmj, total_n_only], [total_m_only, total_orph]])
+        
         sns.scatterplot(
             data=master_df, x='Dist_to_Muscle_um', y='Dist_to_Neuron_um',
             hue='BTX signal class', palette={'NMJ': 'red', 'Muscle Only': 'green', 'Neuron Only': 'blue', 'Orphaned': 'gray'}, ax=ax_scatter
         )
         ax_scatter.axvline(x=distance_threshold_um, color='black', linestyle='--')
         ax_scatter.axhline(y=distance_threshold_um, color='black', linestyle='--')
-        ax_scatter.set_title('1. Global NMJ Proximity Analysis')
+        
+        sig_star = "***" if global_fisher_p < 0.001 else "**" if global_fisher_p < 0.01 else "*" if global_fisher_p < 0.05 else "ns"
+        ax_scatter.set_title(f'1. Global NMJ Proximity Analysis (Fisher P = {global_fisher_p:.4g} {sig_star})')
         ax_scatter.set_xlabel('Distance to Muscle (μm)')
         ax_scatter.set_ylabel('Distance to Neuron (μm)')
 
