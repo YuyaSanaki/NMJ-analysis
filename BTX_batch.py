@@ -585,55 +585,71 @@ if run_current or run_all:
         
         st.subheader("📈 Batch Statistical Summary")
         
-        # Create a massive 5-panel master figure
-        fig, axes = plt.subplots(3, 2, figsize=(24, 28))
+        # Create a massive 5-panel master figure identically matching the physical format of single-image scans
+        fig, axes = plt.subplots(3, 2, figsize=(20, 24))
         
-        # 1. NMJ Proximity (Bar plot of BTX Signal Class Proportions)
-        ax_class = axes[0, 0]
-        class_counts = master_df.groupby(['SOURCE_IMAGE', 'BTX signal class']).size().unstack(fill_value=0)
-        class_props = class_counts.div(class_counts.sum(axis=1), axis=0) * 100
-        target_cols = [c for c in ['NMJ', 'Muscle Only', 'Neuron Only', 'Orphaned'] if c in class_props.columns]
-        class_props[target_cols].plot(kind='bar', stacked=True, ax=ax_class, 
-                            color={'NMJ':'red', 'Muscle Only':'green', 'Neuron Only':'blue', 'Orphaned':'gray'})
-        ax_class.set_title("1. BTX Signal Class Proportional Distribution")
-        ax_class.set_ylabel("Percentage (%)")
-        ax_class.tick_params(axis='x', rotation=90)
-        
-        # We exclusively analyze functional NMJs for specific biological metrics to prevent noisy background/orphaned spots from skewing true junction data.
-        df_nmjs = master_df[master_df['is_NMJ'] == True]
-        
-        # 2. NMJ Size
-        ax_size = axes[0, 1]
-        if len(df_nmjs) > 0:
-            sns.violinplot(data=df_nmjs, x='SOURCE_IMAGE', y='RADIUS', ax=ax_size, hue='SOURCE_FOLDER', inner='quartile')
-        ax_size.set_title("2. Functional NMJ Size (Radius μm)")
-        ax_size.tick_params(axis='x', rotation=90)
-        
-        # 3. Circularity
-        ax_circ = axes[1, 0]
-        if len(df_nmjs) > 0:
-            sns.violinplot(data=df_nmjs, x='SOURCE_IMAGE', y='CIRCULARITY', ax=ax_circ, hue='SOURCE_FOLDER', inner='quartile')
-        ax_circ.set_title("3. Functional NMJ Circularity")
-        ax_circ.set_ylim(0, 1)
-        ax_circ.tick_params(axis='x', rotation=90)
-        
-        # 4. Innervation Overlap
-        ax_innerv = axes[1, 1]
-        if len(df_nmjs) > 0:
-            sns.violinplot(data=df_nmjs, x='SOURCE_IMAGE', y='INNERVATION_OVERLAP_PCT', ax=ax_innerv, hue='SOURCE_FOLDER', inner='quartile')
-        ax_innerv.set_title("4. Functional NMJ Innervation (%)")
-        ax_innerv.set_ylim(-10, 110)
-        ax_innerv.tick_params(axis='x', rotation=90)
-        
-        # 5. Intensity
-        ax_int = axes[2, 0]
-        if len(df_nmjs) > 0:
-            sns.violinplot(data=df_nmjs, x='SOURCE_IMAGE', y='MEAN_INTENSITY', ax=ax_int, hue='SOURCE_FOLDER', inner='quartile')
-        ax_int.set_title("5. Functional NMJ Receptor Intensity")
-        ax_int.tick_params(axis='x', rotation=90)
-        
-        # Format axes
+        ax_scatter = axes[0, 0]
+        ax_size_kde = axes[0, 1]
+        ax_circ_kde = axes[1, 0]
+        ax_overlap_kde = axes[1, 1]
+        ax_intensity_kde = axes[2, 0]
         axes[2, 1].axis('off') # Hide empty 6th panel
+        
+        # 1. NMJ Proximity Scatterplot
+        sns.scatterplot(
+            data=master_df, x='Dist_to_Muscle_um', y='Dist_to_Neuron_um',
+            hue='BTX signal class', palette={'NMJ': 'red', 'Muscle Only': 'green', 'Neuron Only': 'blue', 'Orphaned': 'gray'}, ax=ax_scatter
+        )
+        ax_scatter.axvline(x=distance_threshold_um, color='black', linestyle='--')
+        ax_scatter.axhline(y=distance_threshold_um, color='black', linestyle='--')
+        ax_scatter.set_title('1. Global NMJ Proximity Analysis')
+        ax_scatter.set_xlabel('Distance to Muscle (μm)')
+        ax_scatter.set_ylabel('Distance to Neuron (μm)')
+
+        # 2. NMJ Size KDE
+        if len(master_df) > 0:
+            sns.kdeplot(
+                data=master_df, x='RADIUS', hue='is_NMJ',
+                palette={True: 'red', False: 'gray'}, ax=ax_size_kde,
+                common_norm=False, fill=True
+            )
+        ax_size_kde.set_title('2. Global NMJ Size KDE')
+        ax_size_kde.set_xlabel('Radius (μm)')
+        ax_size_kde.set_ylabel('Probability Density')
+
+        # 3. Circularity KDE
+        if len(master_df) > 0:
+            sns.kdeplot(
+                data=master_df, x='CIRCULARITY', hue='is_NMJ',
+                palette={True: 'red', False: 'gray'}, ax=ax_circ_kde,
+                common_norm=False, fill=True, clip=(0, 1)
+            )
+        ax_circ_kde.set_title('3. Global NMJ Circularity KDE')
+        ax_circ_kde.set_xlabel('Circularity (1 = Perfect Circle)')
+        ax_circ_kde.set_ylabel('Probability Density')
+        ax_circ_kde.set_xlim(0, 1)
+
+        # 4. Innervation Histogram
+        if len(master_df) > 0:
+            sns.histplot(
+                data=master_df, x='INNERVATION_OVERLAP_PCT', hue='is_NMJ',
+                palette={True: 'red', False: 'gray'}, ax=ax_overlap_kde,
+                common_norm=False, multiple="layer"
+            )
+        ax_overlap_kde.set_title('4. Global NMJ Innervation Distribution')
+        ax_overlap_kde.set_xlabel('NMJ Innervation (%)')
+        ax_overlap_kde.set_ylabel('Count')
+
+        # 5. Mean Intensity KDE
+        if len(master_df) > 0:
+            sns.kdeplot(
+                data=master_df, x='MEAN_INTENSITY', hue='is_NMJ',
+                palette={True: 'red', False: 'gray'}, ax=ax_intensity_kde,
+                common_norm=False, fill=True
+            )
+        ax_intensity_kde.set_title('5. Global Receptor Intensity KDE')
+        ax_intensity_kde.set_xlabel('Mean Fluorescence Intensity')
+        ax_intensity_kde.set_ylabel('Probability Density')
         
         plt.tight_layout()
         st.pyplot(fig)
