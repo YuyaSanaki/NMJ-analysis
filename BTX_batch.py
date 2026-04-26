@@ -171,7 +171,8 @@ def load_czi_image(path):
         img_sq = np.max(img_sq, axis=1)
     if img_sq.ndim < 3:
         img_sq = np.expand_dims(img_sq, axis=0)
-    if img_sq.ndim == 3 and img_sq.shape[0] > img_sq.shape[-1]:
+    # Detect (Y, X, C) layout: last axis small (≤10, typical channel count) and smaller than first
+    if img_sq.ndim == 3 and img_sq.shape[-1] <= 10 and img_sq.shape[-1] < img_sq.shape[0]:
         img_sq = np.moveaxis(img_sq, -1, 0)
     return img_sq
 
@@ -187,7 +188,7 @@ with col_p1:
     
     auto_bg = st.checkbox("Auto-Optimize Background Radius", value=True, help="Automatically sets the background filter size to safely cover your largest spots without erasing them.")
     if not auto_bg:
-        btx_bg_radius = st.number_input("Manual Background Radius", value=1.0, step=0.5)
+        btx_bg_radius = st.number_input("Manual Background Radius (pixels)", value=1.0, step=0.5)
     else:
         # Golden rule for morphological subtraction: Radius should be slightly larger than the largest actual objects.
         btx_bg_radius = max_sigma * 2.0
@@ -229,14 +230,38 @@ if run_current or run_all:
         if current_d == folder_path and czi_file in file_configs:
             conf = file_configs[czi_file]
         else:
-            n_ch_temp, px_size_temp = fast_czi_meta(czi_path)
-            conf = {
-                "muscle": min(st.session_state.get("g_m", 0), n_ch_temp-1),
-                "neuron": min(st.session_state.get("g_n", 1), n_ch_temp-1),
-                "btx": min(st.session_state.get("g_b", 3), n_ch_temp-1),
-                "pixel_size": float(px_size_temp),
-                "skip": False
-            }
+            # For folders outside the active UI, try loading saved per-folder configs first
+            import json
+            other_config_path = os.path.join(current_d, "channel_mapping_config.json")
+            loaded_conf = None
+            if os.path.exists(other_config_path):
+                try:
+                    with open(other_config_path, "r") as jf:
+                        folder_configs = json.load(jf)
+                    if czi_file in folder_configs:
+                        fc = folder_configs[czi_file]
+                        loaded_conf = {
+                            "muscle": fc["m"],
+                            "neuron": fc["n"],
+                            "btx": fc["b"],
+                            "pixel_size": fc.get("p", 1.0),
+                            "skip": fc.get("skip", False)
+                        }
+                except Exception:
+                    pass
+            
+            if loaded_conf is not None:
+                conf = loaded_conf
+            else:
+                # Fall back to global template mapping
+                n_ch_temp, px_size_temp = fast_czi_meta(czi_path)
+                conf = {
+                    "muscle": min(st.session_state.get("g_m", 0), n_ch_temp-1),
+                    "neuron": min(st.session_state.get("g_n", 1), n_ch_temp-1),
+                    "btx": min(st.session_state.get("g_b", 3), n_ch_temp-1),
+                    "pixel_size": float(px_size_temp),
+                    "skip": False
+                }
         
         if conf.get("skip", False):
             status.write(f"⏭️ **Skipping:** `{current_d}/{czi_file}` (Marked as Excluded)")
@@ -338,8 +363,8 @@ if run_current or run_all:
                             spot_mask = (labeled == spot_label)
                             
                             # 1. Circularity
-                            props = regionprops(labeled)
-                            prop = props[spot_label - 1]
+                            props = {p.label: p for p in regionprops(labeled)}
+                            prop = props[spot_label]
                             if prop.perimeter > 0:
                                 circ = (4 * np.pi * prop.area) / (prop.perimeter ** 2)
                             else:
@@ -381,7 +406,7 @@ if run_current or run_all:
             
             # Fisher's Exact Test to determine if proximity to Neuron is associated with proximity to Muscle
             from scipy.stats import fisher_exact
-            _, fisher_p = fisher_exact([[nmj_count, near_n_only], [near_m_only, orphaned]])
+            _, fisher_p = fisher_exact([[nmj_count, near_m_only], [near_n_only, orphaned]])
             
             # Pre-calculate spatial classifications before saving downstream
             def classify_quadrant(row):
@@ -460,7 +485,7 @@ if run_current or run_all:
                     palette={True: 'red', False: 'gray'}, ax=ax_circ_kde,
                     common_norm=False, fill=True, clip=(0, 1)
                 )
-            ax_circ_kde.set_title('5. NMJ Circularity KDE')
+            ax_circ_kde.set_title('3. NMJ Circularity KDE')
             ax_circ_kde.set_xlabel('Circularity (1 = Perfect Circle)')
             ax_circ_kde.set_ylabel('Probability Density')
             ax_circ_kde.set_xlim(0, 1)
@@ -472,7 +497,7 @@ if run_current or run_all:
                     palette={True: 'red', False: 'gray'}, ax=ax_size_kde,
                     common_norm=False, fill=True
                 )
-            ax_size_kde.set_title('6. NMJ Size KDE')
+            ax_size_kde.set_title('2. NMJ Size KDE')
             ax_size_kde.set_xlabel('Radius (μm)')
             ax_size_kde.set_ylabel('Probability Density')
             
@@ -507,28 +532,28 @@ if run_current or run_all:
             ax_scatter.axhline(y=distance_threshold_um, color='black', linestyle='--')
             
             sig_star = "***" if fisher_p < 0.001 else "**" if fisher_p < 0.01 else "*" if fisher_p < 0.05 else "ns"
-            ax_scatter.set_title(f'NMJ Proximity Analysis (Fisher P = {fisher_p:.4f} {sig_star})')
+            ax_scatter.set_title(f'1. NMJ Proximity Analysis (Fisher P = {fisher_p:.4f} {sig_star})')
             ax_scatter.set_xlabel('Distance to Muscle (μm)')
             ax_scatter.set_ylabel('Distance to Neuron (μm)')
 
             # Graph 2: PURE Cleaned BTX (No Marks)
             ax_btx_clean.imshow(img_btx, cmap='gray', vmax=np.percentile(img_btx, 99.5))
-            ax_btx_clean.set_title("1. BTX Channel (Background Subtracted)")
+            ax_btx_clean.set_title("6. BTX Channel (Background Subtracted)")
             ax_btx_clean.axis('off')
 
             # Graph 3: Original BTX overlaid with Spots
             ax_btx_marked.imshow(img_btx, cmap='gray', vmax=np.percentile(img_btx, 99.5))
-            ax_btx_marked.set_title("2. BTX Channel + Detected Spots")
+            ax_btx_marked.set_title("7. BTX Channel + Detected Spots")
             ax_btx_marked.axis('off')
 
             # Graph 4: Composite Image + All Spots
             ax_comp_marked.imshow(composite_rgb)
-            ax_comp_marked.set_title("3. Composite + All Detected Spots")
+            ax_comp_marked.set_title("8. Composite + All Detected Spots")
             ax_comp_marked.axis('off')
             
             # Graph 5: Composite Image + NMJ Arrows
             ax_comp_arrows.imshow(composite_rgb)
-            ax_comp_arrows.set_title("4. Composite + Functional NMJs Only")
+            ax_comp_arrows.set_title("9. Composite + Functional NMJs Only")
             ax_comp_arrows.axis('off')
             
             # Plot the overlays
@@ -601,7 +626,7 @@ if run_current or run_all:
         total_m_only = len(master_df[master_df['BTX signal class'] == 'Muscle Only'])
         total_n_only = len(master_df[master_df['BTX signal class'] == 'Neuron Only'])
         total_orph = len(master_df[master_df['BTX signal class'] == 'Orphaned'])
-        _, global_fisher_p = fisher_exact([[total_nmj, total_n_only], [total_m_only, total_orph]])
+        _, global_fisher_p = fisher_exact([[total_nmj, total_m_only], [total_n_only, total_orph]])
         
         sns.scatterplot(
             data=master_df, x='Dist_to_Muscle_um', y='Dist_to_Neuron_um',

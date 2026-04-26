@@ -7,7 +7,7 @@ services:
       - "8501:8501"
     environment:
       - PYTHONUNBUFFERED=1
-    command: streamlit run BTX.py
+    command: streamlit run BTX.py --server.port=8501 --server.address=0.0.0.0
 
   multiple-image-nmj-analysis:
     build: .
@@ -17,4 +17,4 @@ services:
       - "8502:8501"
     environment:
       - PYTHONUNBUFFERED=1
-    command: streamlit run BTX_batch.py
+    command: streamlit run BTX_batch.py --server.port=8501 --server.address=0.0.0.0

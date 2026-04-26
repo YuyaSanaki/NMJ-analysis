@@ -53,8 +53,8 @@ def load_czi_image(path):
         img_sq = np.expand_dims(img_sq, axis=0)
         
     # we expect (C, Y, X)
-    if img_sq.ndim == 3 and img_sq.shape[0] > img_sq.shape[-1]:
-        # if it's (Y, X, C), permute
+    # Detect (Y, X, C) layout: last axis small (≤10, typical channel count) and smaller than first
+    if img_sq.ndim == 3 and img_sq.shape[-1] <= 10 and img_sq.shape[-1] < img_sq.shape[0]:
         img_sq = np.moveaxis(img_sq, -1, 0)
         
     # --- Extract Pixel Size (Microns) ---
@@ -111,7 +111,7 @@ with col_p1:
     
     auto_bg = st.checkbox("Auto-Optimize Background Radius", value=True, help="Automatically sets the background filter size to safely cover your largest spots without erasing them.")
     if not auto_bg:
-        btx_bg_radius = st.number_input("Manual Background Radius", value=1.0, step=0.5)
+        btx_bg_radius = st.number_input("Manual Background Radius (pixels)", value=1.0, step=0.5)
     else:
         # Golden rule for morphological subtraction: Radius should be slightly larger than the largest actual objects.
         btx_bg_radius = max_sigma * 2.0
@@ -149,21 +149,18 @@ if st.button("🚀 Process Pipeline", type="primary"):
             st.info("Detecting BTX Spots...")
             # blob_dog returns array of (y, x, sigma)
             blobs = blob_dog(img_btx_norm, min_sigma=min_sigma, max_sigma=max_sigma, threshold=threshold)
-            blobs[:, 2] = blobs[:, 2] * np.sqrt(2) # compute radius
             
             total_spots = len(blobs)
             if total_spots == 0:
                 st.error("No spots found! Try lowering the Detection Threshold.")
                 st.stop()
             
+            blobs[:, 2] = blobs[:, 2] * np.sqrt(2) # compute radius
+            
             st.success(f"TrackMate Replacement: Detected {total_spots} Spots!")
 
             # --- Auto EDT Generation ---
             st.info("Generating Auto Distance Maps (EDT)...")
-            val_m = threshold_otsu(img_muscle) * m_thresh_mult
-            val_n = threshold_otsu(img_neuron) * n_thresh_mult
-            
-            st.info("Creating Threshold Masks & Euclidean Distance Maps...")
             # Compute Otsu directly on the raw intensity images
             m_thresh = threshold_otsu(img_muscle) * m_thresh_mult
             n_thresh = threshold_otsu(img_neuron) * n_thresh_mult
@@ -229,8 +226,8 @@ if st.button("🚀 Process Pipeline", type="primary"):
                             spot_mask = (labeled == spot_label)
                             
                             # 1. Circularity
-                            props = regionprops(labeled)
-                            prop = props[spot_label - 1]
+                            props = {p.label: p for p in regionprops(labeled)}
+                            prop = props[spot_label]
                             if prop.perimeter > 0:
                                 circ = (4 * np.pi * prop.area) / (prop.perimeter ** 2)
                             else:
@@ -271,7 +268,7 @@ if st.button("🚀 Process Pipeline", type="primary"):
             orphaned = len(df_spots[(df_spots['Dist_to_Muscle_um'] > distance_threshold_um) & (df_spots['Dist_to_Neuron_um'] > distance_threshold_um)])
             
             from scipy.stats import fisher_exact
-            _, fisher_p = fisher_exact([[nmj_count, near_n_only], [near_m_only, orphaned]])
+            _, fisher_p = fisher_exact([[nmj_count, near_m_only], [near_n_only, orphaned]])
 
             # --- Visualisation ---
             st.divider()
@@ -350,7 +347,7 @@ if st.button("🚀 Process Pipeline", type="primary"):
                     palette={True: 'red', False: 'gray'}, ax=ax_circ_kde,
                     common_norm=False, fill=True, clip=(0, 1)
                 )
-            ax_circ_kde.set_title('5. NMJ Circularity KDE')
+            ax_circ_kde.set_title('3. NMJ Circularity KDE')
             ax_circ_kde.set_xlabel('Circularity (1 = Perfect Circle)')
             ax_circ_kde.set_ylabel('Probability Density')
             ax_circ_kde.set_xlim(0, 1)
@@ -362,7 +359,7 @@ if st.button("🚀 Process Pipeline", type="primary"):
                     palette={True: 'red', False: 'gray'}, ax=ax_size_kde,
                     common_norm=False, fill=True
                 )
-            ax_size_kde.set_title('6. NMJ Size KDE')
+            ax_size_kde.set_title('2. NMJ Size KDE')
             ax_size_kde.set_xlabel('Radius (μm)')
             ax_size_kde.set_ylabel('Probability Density')
             
@@ -397,28 +394,28 @@ if st.button("🚀 Process Pipeline", type="primary"):
             ax_scatter.axhline(y=distance_threshold_um, color='black', linestyle='--')
             
             sig_star = "***" if fisher_p < 0.001 else "**" if fisher_p < 0.01 else "*" if fisher_p < 0.05 else "ns"
-            ax_scatter.set_title(f'NMJ Proximity Analysis (Fisher P = {fisher_p:.4f} {sig_star})')
+            ax_scatter.set_title(f'1. NMJ Proximity Analysis (Fisher P = {fisher_p:.4f} {sig_star})')
             ax_scatter.set_xlabel('Distance to Muscle (μm)')
             ax_scatter.set_ylabel('Distance to Neuron (μm)')
 
             # Graph 2: PURE Cleaned BTX (No Marks)
             ax_btx_clean.imshow(img_btx, cmap='gray', vmax=np.percentile(img_btx, 99.5))
-            ax_btx_clean.set_title("1. BTX Channel (Background Subtracted)")
+            ax_btx_clean.set_title("6. BTX Channel (Background Subtracted)")
             ax_btx_clean.axis('off')
 
             # Graph 3: Original BTX overlaid with Spots
             ax_btx_marked.imshow(img_btx, cmap='gray', vmax=np.percentile(img_btx, 99.5))
-            ax_btx_marked.set_title("2. BTX Channel + Detected Spots")
+            ax_btx_marked.set_title("7. BTX Channel + Detected Spots")
             ax_btx_marked.axis('off')
 
             # Graph 4: Composite Image + All Spots
             ax_comp_marked.imshow(composite_rgb)
-            ax_comp_marked.set_title("3. Composite + All Detected Spots")
+            ax_comp_marked.set_title("8. Composite + All Detected Spots")
             ax_comp_marked.axis('off')
             
             # Graph 5: Composite Image + NMJ Arrows
             ax_comp_arrows.imshow(composite_rgb)
-            ax_comp_arrows.set_title("4. Composite + Functional NMJs Only")
+            ax_comp_arrows.set_title("9. Composite + Functional NMJs Only")
             ax_comp_arrows.axis('off')
             
             # Plot the overlays
@@ -447,6 +444,7 @@ if st.button("🚀 Process Pipeline", type="primary"):
             # Save visual
             out_img = os.path.join(folder_path, f"{selected_czi.replace('.czi', '')}_NMJ_Plot.png")
             fig.savefig(out_img, bbox_inches='tight')
+            plt.close(fig)
 
             st.success(f"Files saved: `{out_csv}` and `{out_img}`")
 
