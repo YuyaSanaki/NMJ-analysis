@@ -386,11 +386,11 @@ if st.button("🚀 Process Pipeline", type="primary"):
                 else:
                     return 'Orphaned'
             
-            df_spots['Quadrant'] = df_spots.apply(classify_quadrant, axis=1)
+            df_spots['BTX signal class'] = df_spots.apply(classify_quadrant, axis=1)
             
             sns.scatterplot(
                 data=df_spots, x='Dist_to_Muscle_um', y='Dist_to_Neuron_um',
-                hue='Quadrant', palette={'NMJ': 'red', 'Muscle Only': 'green', 'Neuron Only': 'blue', 'Orphaned': 'gray'}, ax=ax_scatter
+                hue='BTX signal class', palette={'NMJ': 'red', 'Muscle Only': 'green', 'Neuron Only': 'blue', 'Orphaned': 'gray'}, ax=ax_scatter
             )
             ax_scatter.axvline(x=distance_threshold_um, color='black', linestyle='--')
             ax_scatter.axhline(y=distance_threshold_um, color='black', linestyle='--')
