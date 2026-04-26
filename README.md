@@ -21,6 +21,11 @@ docker compose up --build -d
 
 3. **Data Mounting:** Place any `.czi` files into subfolders inside this project directory. The Docker container maps the local folder into `/app` so your data is immediately visible in the UI.
 
+4. **Stop the containers** when you are done:
+```bash
+docker compose down
+```
+
 ---
 
 ## 🎨 Features & Methodologies
