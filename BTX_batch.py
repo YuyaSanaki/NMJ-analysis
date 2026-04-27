@@ -246,6 +246,30 @@ def detect_blobs_stable(img_btx_norm, min_diameter_um, max_diameter_um, pixel_si
     return blobs, dog_scale, sigma_cap
 
 
+def estimate_auto_threshold(img_btx_norm):
+    """Estimate a robust per-image DoG threshold from signal/noise statistics."""
+    values = np.asarray(img_btx_norm, dtype=np.float32).ravel()
+    if values.size == 0:
+        return 0.05
+
+    # Bound memory/CPU for very large images by sampling a fixed-size subset.
+    sample_cap = 300_000
+    if values.size > sample_cap:
+        step = int(np.ceil(values.size / sample_cap))
+        values = values[::step]
+
+    med = float(np.median(values))
+    mad = float(np.median(np.abs(values - med)))
+    robust_sigma = 1.4826 * mad
+    p99 = float(np.percentile(values, 99.0))
+
+    # Blend robust noise floor + high-intensity guard for variable SNR data.
+    thr_from_noise = med + (4.0 * robust_sigma)
+    thr_from_high = 0.25 * p99
+    auto_thr = max(thr_from_noise, thr_from_high)
+    return float(np.clip(auto_thr, 0.005, 0.20))
+
+
 def save_all_folders_summary_png(master_df, out_png, distance_threshold_um):
     """Create a single mother-directory PNG summarizing all folders."""
     from scipy.stats import fisher_exact
@@ -354,7 +378,12 @@ with col_p1:
     if max_diameter_um <= min_diameter_um:
         st.error("Max Spot Diameter must be larger than Min Spot Diameter.")
         st.stop()
-    threshold = st.number_input("Detection Threshold", value=0.05, step=0.01)
+    auto_threshold = st.checkbox(
+        "Auto Threshold per image",
+        value=False,
+        help="Adapts DoG threshold from each image's BTX signal/noise profile.",
+    )
+    threshold = st.number_input("Detection Threshold", value=0.05, step=0.01, disabled=auto_threshold)
     
     auto_bg = st.checkbox("Auto-Optimize Background Radius", value=True, help="Uses a physical-radius model (µm) and converts to pixels per image.")
     if not auto_bg:
@@ -488,12 +517,15 @@ if run_current or run_all:
 
             # Normalize BTX for spot detection
             img_btx_norm = rescale_intensity(img_btx, out_range=(0.0, 1.0))
+            threshold_used = estimate_auto_threshold(img_btx_norm) if auto_threshold else float(threshold)
+            if auto_threshold:
+                st.caption(f"{czi_file}: Detection threshold used `{threshold_used:.4f}`")
             blobs, dog_scale, sigma_cap = detect_blobs_stable(
                 img_btx_norm=img_btx_norm,
                 min_diameter_um=min_diameter_um,
                 max_diameter_um=max_diameter_um,
                 pixel_size_um=pixel_size,
-                threshold=threshold,
+                threshold=threshold_used,
             )
             if blobs is None:
                 st.warning(
@@ -606,6 +638,7 @@ if run_current or run_all:
                     "INNERVATION_OVERLAP_PCT": overlap_ratio,
                     "Dist_to_Muscle_um": d_m_um,
                     "Dist_to_Neuron_um": d_n_um,
+                    "DETECTION_THRESHOLD_USED": threshold_used,
                     "is_NMJ": (d_m_um <= distance_threshold_um) and (d_n_um <= distance_threshold_um)
                 })
 
