@@ -13,8 +13,7 @@ This project runs locally entirely inside Docker, utilizing `Streamlit` to gener
 
 1. Start the Docker containers:
 ```bash
-docker compose up --build -d
-docker compose up -d
+docker compose up --build
 ```
 2. Navigate to your desired pipeline in the browser:
    * **Single Image Mode:** `http://localhost:8501`
@@ -25,6 +24,8 @@ docker compose up -d
 4. **Stop the containers** when you are done:
 ```bash
 docker compose down
+or
+command + C
 ```
 
 ---
@@ -34,8 +35,24 @@ docker compose down
 ### 1. Robust Spot Detection (Difference of Gaussians)
 The system uses skimage's `blob_dog` algorithm to detect Acetylcholine Receptors (BTX channel) accurately. To prevent artifacts from background fluorescence, it utilizes an auto-optimized **Morphological White Top-Hat Filter** (the mathematical equivalent of FIJI's rolling-ball background subtraction) before spot detection.
 
+Spot-size controls are now defined as **diameter thresholds in μm**:
+
+- **Min Spot Diameter (μm)**
+- **Max Spot Diameter (μm)**
+
+Internally, `blob_dog` still works on Gaussian sigma. The app converts diameter to sigma automatically using:
+
+`sigma_um = diameter_um / (2 * sqrt(2))`
+
+This keeps the UI biologically intuitive while preserving mathematically correct DoG behavior.
+
 ### 2. Actual Physical Measurements
 The pipeline fundamentally binds to reality by actively extracting the raw `Distance` scaling vectors (μm/pixel) from the intrinsic `.czi` metadata. All algorithms, boundaries, and outputs are dynamically mapped directly into **physical Micrometers (μm)**, completely isolating the math from arbitrary changes in microscope magnifications or pixel resolutions.
+
+To improve stability on very large spot-size settings (for example `5-20 μm` diameters), the pipeline includes memory-safe guards:
+
+- Adaptive downscaling during DoG detection for large sigma requests, then remaps detected spots back to original coordinates.
+- Safe caps for DoG sigma and morphological background radius to avoid container OOM crashes.
 
 ### 3. Biological & Spatial Exocentrism
 For every detected receptor spot, the script executes highly localized Otsu thresholding across multiple spatial channels to extract deep contextual variables:

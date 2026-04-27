@@ -7,7 +7,7 @@ import streamlit as st
 import aicspylibczi
 from skimage.feature import blob_dog
 from skimage.filters import threshold_otsu
-from scipy.ndimage import distance_transform_edt
+from scipy.ndimage import distance_transform_edt, zoom
 from skimage.exposure import rescale_intensity
 
 st.set_page_config(page_title="NMJ Pipeline", layout="wide")
@@ -73,6 +73,74 @@ def load_czi_image(path):
         
     return img_sq, pixel_size_um
 
+
+def compute_sigma_bounds_px(min_sigma_um, max_sigma_um, pixel_size_um, image_shape):
+    """Convert physical sigma bounds to stable pixel bounds for blob_dog."""
+    pixel_size_safe = max(float(pixel_size_um), 1e-9)
+    min_px_raw = float(min_sigma_um) / pixel_size_safe
+    max_px_raw = float(max_sigma_um) / pixel_size_safe
+    min_px = max(0.5, min_px_raw)
+    max_px = max(min_px + 0.1, max_px_raw)
+
+    # Prevent pathological DoG scales that can OOM or disconnect Streamlit.
+    h, w = image_shape[:2]
+    # Keep upper sigma conservative; huge sigmas are computationally unstable in Streamlit.
+    sigma_cap = max(2.0, min(64.0, min(h, w) / 12.0))
+    if min_px > sigma_cap:
+        return None, None, sigma_cap
+    max_px = min(max_px, sigma_cap)
+    return min_px, max_px, sigma_cap
+
+
+def compute_bg_radius_px(bg_radius_um, pixel_size_um, image_shape):
+    """Convert physical background radius to a bounded morphological kernel size."""
+    pixel_size_safe = max(float(pixel_size_um), 1e-9)
+    radius_px_raw = float(bg_radius_um) / pixel_size_safe
+    h, w = image_shape[:2]
+    radius_cap = max(3.0, min(96.0, min(h, w) / 16.0))
+    radius_px = int(max(1, min(round(radius_px_raw), radius_cap)))
+    clipped = radius_px_raw > radius_cap
+    return radius_px, clipped, radius_cap
+
+
+def detect_blobs_stable(img_btx_norm, min_diameter_um, max_diameter_um, pixel_size_um, threshold):
+    """Run DoG in a memory-safe way using diameter thresholds (µm)."""
+    # blob_dog scale is sigma; approximate blob radius is sigma*sqrt(2).
+    # Therefore: sigma_um = (diameter_um / 2) / sqrt(2).
+    min_sigma_um = float(min_diameter_um) / (2.0 * np.sqrt(2.0))
+    max_sigma_um = float(max_diameter_um) / (2.0 * np.sqrt(2.0))
+
+    pixel_size_safe = max(float(pixel_size_um), 1e-9)
+    max_sigma_px_raw = float(max_sigma_um) / pixel_size_safe
+    dog_scale = 1.0
+    dog_sigma_target = 48.0
+
+    if max_sigma_px_raw > dog_sigma_target:
+        dog_scale = max(0.1, dog_sigma_target / max_sigma_px_raw)
+        img_for_dog = zoom(img_btx_norm, zoom=dog_scale, order=1)
+    else:
+        img_for_dog = img_btx_norm
+
+    pixel_size_for_dog = pixel_size_safe / dog_scale
+    min_sigma_px, max_sigma_px, sigma_cap = compute_sigma_bounds_px(
+        min_sigma_um=min_sigma_um,
+        max_sigma_um=max_sigma_um,
+        pixel_size_um=pixel_size_for_dog,
+        image_shape=img_for_dog.shape,
+    )
+    if min_sigma_px is None:
+        return None, dog_scale, sigma_cap
+
+    blobs = blob_dog(img_for_dog, min_sigma=min_sigma_px, max_sigma=max_sigma_px, threshold=threshold)
+    if len(blobs) == 0:
+        return blobs, dog_scale, sigma_cap
+
+    blobs[:, 2] = blobs[:, 2] * np.sqrt(2)  # radius in dog-space pixels
+    if dog_scale != 1.0:
+        blobs[:, :2] = blobs[:, :2] / dog_scale
+        blobs[:, 2] = blobs[:, 2] / dog_scale
+    return blobs, dog_scale, sigma_cap
+
 with st.spinner("Loading CZI..."):
     try:
         image_data, pixel_size_um = load_czi_image(czi_path)
@@ -105,16 +173,19 @@ col_p1, col_p2, col_p3 = st.columns(3)
 
 with col_p1:
     st.markdown("**DoG Tunning (BTX)**")
-    min_sigma = st.number_input("Min Spot Size (Sigma)", value=3.0, step=0.5)
-    max_sigma = st.number_input("Max Spot Size (Sigma)", value=5.0, step=0.5)
+    min_diameter_um = st.number_input("Min Spot Diameter (μm)", value=3.00, step=0.10)
+    max_diameter_um = st.number_input("Max Spot Diameter (μm)", value=10.00, step=0.10)
+    if max_diameter_um <= min_diameter_um:
+        st.error("Max Spot Diameter must be larger than Min Spot Diameter.")
+        st.stop()
     threshold = st.number_input("Detection Threshold", value=0.05, step=0.01)
     
-    auto_bg = st.checkbox("Auto-Optimize Background Radius", value=True, help="Automatically sets the background filter size to safely cover your largest spots without erasing them.")
+    auto_bg = st.checkbox("Auto-Optimize Background Radius", value=True, help="Uses a physical-radius model (µm) and converts to pixels per image.")
     if not auto_bg:
-        btx_bg_radius = st.number_input("Manual Background Radius (pixels)", value=1.0, step=0.5)
+        btx_bg_radius_um = st.number_input("Manual Background Radius (μm)", value=1.0, step=0.1)
     else:
-        # Golden rule for morphological subtraction: Radius should be slightly larger than the largest actual objects.
-        btx_bg_radius = max_sigma * 2.0
+        # Tie auto background radius to detected maximum diameter scale.
+        btx_bg_radius_um = float(max_diameter_um)
 
 with col_p2:
     st.markdown("**EDT Thresholds**")
@@ -134,28 +205,53 @@ if st.button("🚀 Process Pipeline", type="primary"):
             img_muscle = image_data[muscle_idx]
             img_neuron = image_data[neuron_idx]
             img_btx = image_data[btx_idx]
+            img_btx_raw = img_btx.copy()
 
             # --- Background Subtraction ---
-            if btx_bg_radius > 0:
+            if btx_bg_radius_um > 0:
                 from skimage.morphology import white_tophat, disk
-                radius_px = max(1, int(round(btx_bg_radius)))
+                radius_px, bg_clipped, bg_cap = compute_bg_radius_px(
+                    bg_radius_um=btx_bg_radius_um,
+                    pixel_size_um=pixel_size,
+                    image_shape=img_btx.shape,
+                )
+                if bg_clipped:
+                    st.warning(
+                        f"Background radius clipped to safe limit (~{bg_cap * float(pixel_size):.3g} μm) "
+                        f"to avoid memory crashes."
+                    )
                 # White top-hat is the direct morphological equivalent of FIJI's rolling ball background subtraction
                 img_btx = white_tophat(img_btx, disk(radius_px))
 
             # Normalize BTX for spot detection
             img_btx_norm = rescale_intensity(img_btx, out_range=(0.0, 1.0))
+
+            blobs, dog_scale, sigma_cap = detect_blobs_stable(
+                img_btx_norm=img_btx_norm,
+                min_diameter_um=min_diameter_um,
+                max_diameter_um=max_diameter_um,
+                pixel_size_um=pixel_size,
+                threshold=threshold,
+            )
+            if blobs is None:
+                st.error(
+                    f"Min Spot Diameter is too large for this image scale. "
+                    f"Please reduce it below approximately {2.0 * np.sqrt(2.0) * sigma_cap * float(pixel_size):.3g} μm."
+                )
+                st.stop()
+            if dog_scale < 1.0:
+                st.warning(
+                    f"Large spot-size mode enabled: detection ran on a {dog_scale:.2f}x scaled image "
+                    f"for stability, then mapped back to original coordinates."
+                )
             
             # --- DoG Spot Detection ---
             st.info("Detecting BTX Spots...")
-            # blob_dog returns array of (y, x, sigma)
-            blobs = blob_dog(img_btx_norm, min_sigma=min_sigma, max_sigma=max_sigma, threshold=threshold)
             
             total_spots = len(blobs)
             if total_spots == 0:
                 st.error("No spots found! Try lowering the Detection Threshold.")
                 st.stop()
-            
-            blobs[:, 2] = blobs[:, 2] * np.sqrt(2) # compute radius
             
             st.success(f"TrackMate Replacement: Detected {total_spots} Spots!")
 
@@ -310,6 +406,20 @@ if st.button("🚀 Process Pipeline", type="primary"):
             img_m_norm = auto_contrast(img_muscle)
             img_n_norm = auto_contrast(img_neuron)
             img_b_norm = auto_contrast(img_btx)
+
+            def robust_minmax(img):
+                p_low, p_high = np.percentile(img, (1, 99.8))
+                if p_high <= p_low:
+                    p_high = p_low + 1e-6
+                return float(p_low), float(p_high)
+
+            btx_clean_vis = img_btx.astype(np.float32)
+
+            # Use a shared display range so raw/clean are visually comparable.
+            disp_low, disp_high = robust_minmax(img_btx_raw.astype(np.float32))
+            img_btx_raw_vis = rescale_intensity(img_btx_raw.astype(np.float32), in_range=(disp_low, disp_high), out_range=(0.0, 1.0))
+            img_btx_clean_vis = rescale_intensity(btx_clean_vis, in_range=(disp_low, disp_high), out_range=(0.0, 1.0))
+            raw_clean_side_by_side = np.concatenate([img_btx_raw_vis, img_btx_clean_vis], axis=1)
             
             # Composite RGB:
             # Red = Neuron + BTX (Yellow needs Red)
@@ -398,14 +508,16 @@ if st.button("🚀 Process Pipeline", type="primary"):
             ax_scatter.set_xlabel('Distance to Muscle (μm)')
             ax_scatter.set_ylabel('Distance to Neuron (μm)')
 
-            # Graph 2: PURE Cleaned BTX (No Marks)
-            ax_btx_clean.imshow(img_btx, cmap='gray', vmax=np.percentile(img_btx, 99.5))
-            ax_btx_clean.set_title("6. BTX Channel (Background Subtracted)")
+            # Graph 2: Raw and cleaned BTX shown side-by-side for subtraction verification
+            ax_btx_clean.imshow(raw_clean_side_by_side, cmap='gray', vmin=0.0, vmax=1.0)
+            pane_w = img_btx_raw_vis.shape[1]
+            ax_btx_clean.axvline(x=pane_w - 0.5, color='yellow', linewidth=2.5)
+            ax_btx_clean.set_title("6. Raw BTX (L) | Cleaned BTX (R)")
             ax_btx_clean.axis('off')
 
-            # Graph 3: Original BTX overlaid with Spots
-            ax_btx_marked.imshow(img_btx, cmap='gray', vmax=np.percentile(img_btx, 99.5))
-            ax_btx_marked.set_title("7. BTX Channel + Detected Spots")
+            # Graph 3: Strictly scaled cleaned BTX overlaid with spots
+            ax_btx_marked.imshow(img_btx_clean_vis, cmap='gray', vmin=0.0, vmax=1.0)
+            ax_btx_marked.set_title("7. Cleaned BTX + Detected Spots")
             ax_btx_marked.axis('off')
 
             # Graph 4: Composite Image + All Spots
