@@ -710,90 +710,262 @@ if run_current or run_all:
         st.subheader("📈 Batch Statistical Summary")
 
         if run_all:
-            folder_stats_df = save_all_folders_summary_png(master_df, master_png, distance_threshold_um)
-            folder_stats_df.to_csv(summary_table_csv, index=False)
-            st.image(master_png, caption="All-folders summary saved in mother directory")
-            st.success(f"All-folders summary table saved: `{summary_table_csv}`")
-        else:
-            # Create a massive 5-panel master figure identically matching the physical format of single-image scans
-            fig, axes = plt.subplots(3, 2, figsize=(20, 24))
-            
-            ax_scatter = axes[0, 0]
-            ax_size_kde = axes[0, 1]
-            ax_circ_kde = axes[1, 0]
-            ax_overlap_kde = axes[1, 1]
-            ax_intensity_kde = axes[2, 0]
-            axes[2, 1].axis('off') # Hide empty 6th panel
-            
-            # 1. NMJ Proximity Scatterplot
-            from scipy.stats import fisher_exact
-            total_nmj = len(master_df[master_df['BTX signal class'] == 'NMJ'])
-            total_m_only = len(master_df[master_df['BTX signal class'] == 'Muscle Only'])
-            total_n_only = len(master_df[master_df['BTX signal class'] == 'Neuron Only'])
-            total_orph = len(master_df[master_df['BTX signal class'] == 'Orphaned'])
-            _, global_fisher_p = fisher_exact([[total_nmj, total_m_only], [total_n_only, total_orph]])
-            
-            sns.scatterplot(
-                data=master_df, x='Dist_to_Muscle_um', y='Dist_to_Neuron_um',
-                hue='BTX signal class', palette={'NMJ': 'red', 'Muscle Only': 'green', 'Neuron Only': 'blue', 'Orphaned': 'gray'}, ax=ax_scatter
+            folder_stats_df = (
+                master_df.groupby("SOURCE_FOLDER")
+                .agg(
+                    total_spots=("is_NMJ", "size"),
+                    nmj_spots=("is_NMJ", "sum"),
+                    mean_radius_um=("RADIUS", "mean"),
+                    mean_overlap_pct=("INNERVATION_OVERLAP_PCT", "mean"),
+                    median_dist_muscle_um=("Dist_to_Muscle_um", "median"),
+                    median_dist_neuron_um=("Dist_to_Neuron_um", "median"),
+                )
+                .reset_index()
+                .sort_values("SOURCE_FOLDER")
             )
-            ax_scatter.axvline(x=distance_threshold_um, color='black', linestyle='--')
-            ax_scatter.axhline(y=distance_threshold_um, color='black', linestyle='--')
-            
-            sig_star = "***" if global_fisher_p < 0.001 else "**" if global_fisher_p < 0.01 else "*" if global_fisher_p < 0.05 else "ns"
-            ax_scatter.set_title(f'1. Global NMJ Proximity Analysis (Fisher P = {global_fisher_p:.4g} {sig_star})')
-            ax_scatter.set_xlabel('Distance to Muscle (μm)')
-            ax_scatter.set_ylabel('Distance to Neuron (μm)')
+            folder_stats_df["nmj_rate_pct"] = np.where(
+                folder_stats_df["total_spots"] > 0,
+                folder_stats_df["nmj_spots"] / folder_stats_df["total_spots"] * 100.0,
+                0.0,
+            )
+            folder_stats_df.to_csv(summary_table_csv, index=False)
+            st.success(f"All-folders summary table saved: `{summary_table_csv}`")
 
-            # 2. NMJ Size KDE
-            if len(master_df) > 0:
-                sns.kdeplot(
-                    data=master_df, x='RADIUS', hue='is_NMJ',
-                    palette={True: 'red', False: 'gray'}, ax=ax_size_kde,
-                    common_norm=False, fill=True
-                )
-            ax_size_kde.set_title('2. Global NMJ Size KDE')
-            ax_size_kde.set_xlabel('Radius (μm)')
-            ax_size_kde.set_ylabel('Probability Density')
+        # Create summary dashboard.
+        # For ALL-folder mode, extend to a 10-panel figure with extra comparative analytics.
+        if run_all:
+            fig, axes = plt.subplots(5, 2, figsize=(24, 42))
+        else:
+            fig, axes = plt.subplots(3, 2, figsize=(20, 24))
 
-            # 3. Circularity KDE
-            if len(master_df) > 0:
-                sns.kdeplot(
-                    data=master_df, x='CIRCULARITY', hue='is_NMJ',
-                    palette={True: 'red', False: 'gray'}, ax=ax_circ_kde,
-                    common_norm=False, fill=True, clip=(0, 1)
-                )
-            ax_circ_kde.set_title('3. Global NMJ Circularity KDE')
-            ax_circ_kde.set_xlabel('Circularity (1 = Perfect Circle)')
-            ax_circ_kde.set_ylabel('Probability Density')
-            ax_circ_kde.set_xlim(0, 1)
+        ax_scatter = axes[0, 0]
+        ax_size_kde = axes[0, 1]
+        ax_circ_kde = axes[1, 0]
+        ax_overlap_kde = axes[1, 1]
+        ax_intensity_kde = axes[2, 0]
+        ax_extra = axes[2, 1]
 
-            # 4. Innervation Histogram
-            if len(master_df) > 0:
-                sns.histplot(
-                    data=master_df, x='INNERVATION_OVERLAP_PCT', hue='is_NMJ',
-                    palette={True: 'red', False: 'gray'}, ax=ax_overlap_kde,
-                    common_norm=False, multiple="layer"
-                )
-            ax_overlap_kde.set_title('4. Global NMJ Innervation Distribution')
-            ax_overlap_kde.set_xlabel('NMJ Innervation (%)')
-            ax_overlap_kde.set_ylabel('Count')
+        # 1. NMJ Proximity Scatterplot
+        from scipy.stats import fisher_exact
+        total_nmj = len(master_df[master_df['BTX signal class'] == 'NMJ'])
+        total_m_only = len(master_df[master_df['BTX signal class'] == 'Muscle Only'])
+        total_n_only = len(master_df[master_df['BTX signal class'] == 'Neuron Only'])
+        total_orph = len(master_df[master_df['BTX signal class'] == 'Orphaned'])
+        _, global_fisher_p = fisher_exact([[total_nmj, total_m_only], [total_n_only, total_orph]])
 
-            # 5. Mean Intensity KDE
-            if len(master_df) > 0:
-                sns.kdeplot(
-                    data=master_df, x='MEAN_INTENSITY', hue='is_NMJ',
-                    palette={True: 'red', False: 'gray'}, ax=ax_intensity_kde,
-                    common_norm=False, fill=True
+        sns.scatterplot(
+            data=master_df, x='Dist_to_Muscle_um', y='Dist_to_Neuron_um',
+            hue='BTX signal class', palette={'NMJ': 'red', 'Muscle Only': 'green', 'Neuron Only': 'blue', 'Orphaned': 'gray'}, ax=ax_scatter
+        )
+        ax_scatter.axvline(x=distance_threshold_um, color='black', linestyle='--')
+        ax_scatter.axhline(y=distance_threshold_um, color='black', linestyle='--')
+
+        sig_star = "***" if global_fisher_p < 0.001 else "**" if global_fisher_p < 0.01 else "*" if global_fisher_p < 0.05 else "ns"
+        ax_scatter.set_title(f'1. Global NMJ Proximity Analysis (Fisher P = {global_fisher_p:.4g} {sig_star})')
+        ax_scatter.set_xlabel('Distance to Muscle (μm)')
+        ax_scatter.set_ylabel('Distance to Neuron (μm)')
+
+        # 2. NMJ Size KDE
+        if len(master_df) > 0:
+            sns.kdeplot(
+                data=master_df, x='RADIUS', hue='is_NMJ',
+                palette={True: 'red', False: 'gray'}, ax=ax_size_kde,
+                common_norm=False, fill=True
+            )
+        ax_size_kde.set_title('2. Global NMJ Size KDE')
+        ax_size_kde.set_xlabel('Radius (μm)')
+        ax_size_kde.set_ylabel('Probability Density')
+
+        # 3. Circularity KDE
+        if len(master_df) > 0:
+            sns.kdeplot(
+                data=master_df, x='CIRCULARITY', hue='is_NMJ',
+                palette={True: 'red', False: 'gray'}, ax=ax_circ_kde,
+                common_norm=False, fill=True, clip=(0, 1)
+            )
+        ax_circ_kde.set_title('3. Global NMJ Circularity KDE')
+        ax_circ_kde.set_xlabel('Circularity (1 = Perfect Circle)')
+        ax_circ_kde.set_ylabel('Probability Density')
+        ax_circ_kde.set_xlim(0, 1)
+
+        # 4. Innervation Histogram
+        if len(master_df) > 0:
+            sns.histplot(
+                data=master_df, x='INNERVATION_OVERLAP_PCT', hue='is_NMJ',
+                palette={True: 'red', False: 'gray'}, ax=ax_overlap_kde,
+                common_norm=False, multiple="layer"
+            )
+        ax_overlap_kde.set_title('4. Global NMJ Innervation Distribution')
+        ax_overlap_kde.set_xlabel('NMJ Innervation (%)')
+        ax_overlap_kde.set_ylabel('Count')
+
+        # 5. Mean Intensity KDE
+        if len(master_df) > 0:
+            sns.kdeplot(
+                data=master_df, x='MEAN_INTENSITY', hue='is_NMJ',
+                palette={True: 'red', False: 'gray'}, ax=ax_intensity_kde,
+                common_norm=False, fill=True
+            )
+        ax_intensity_kde.set_title('5. Global Receptor Intensity KDE')
+        ax_intensity_kde.set_xlabel('Mean Fluorescence Intensity')
+        ax_intensity_kde.set_ylabel('Probability Density')
+
+        # 6. Additional panel only for ALL-folder runs
+        if run_all:
+            sns.barplot(
+                data=folder_stats_df,
+                x='SOURCE_FOLDER',
+                y='nmj_rate_pct',
+                color='red',
+                ax=ax_extra
+            )
+            ax_extra.set_title('6. NMJ Formation Rate by Folder')
+            ax_extra.set_xlabel('Folder')
+            ax_extra.set_ylabel('NMJ Rate (%)')
+            ax_extra.tick_params(axis='x', rotation=45)
+        else:
+            ax_extra.axis('off') # Keep same single-folder layout
+
+        if run_all:
+            ax_size_overlap = axes[3, 0]
+            ax_forest = axes[3, 1]
+            ax_corr = axes[4, 0]
+            ax_control = axes[4, 1]
+
+            # 7. Spot size vs innervation overlap scatter
+            sns.scatterplot(
+                data=master_df,
+                x='RADIUS',
+                y='INNERVATION_OVERLAP_PCT',
+                hue='BTX signal class',
+                palette={'NMJ': 'red', 'Muscle Only': 'green', 'Neuron Only': 'blue', 'Orphaned': 'gray'},
+                alpha=0.35,
+                s=18,
+                ax=ax_size_overlap
+            )
+            ax_size_overlap.set_title('7. Spot Size vs Innervation Overlap')
+            ax_size_overlap.set_xlabel('Radius (μm)')
+            ax_size_overlap.set_ylabel('Innervation Overlap (%)')
+
+            # 8. Folder-wise NMJ odds ratio (forest style)
+            odds_rows = []
+            for _, fs_row in folder_stats_df.iterrows():
+                folder_name = fs_row['SOURCE_FOLDER']
+                df_f = master_df[master_df['SOURCE_FOLDER'] == folder_name]
+                nmj = int((df_f['BTX signal class'] == 'NMJ').sum())
+                m_only = int((df_f['BTX signal class'] == 'Muscle Only').sum())
+                n_only = int((df_f['BTX signal class'] == 'Neuron Only').sum())
+                orphan = int((df_f['BTX signal class'] == 'Orphaned').sum())
+
+                # Haldane-Anscombe correction for stability when any cell is zero
+                a = nmj + 0.5
+                b = m_only + 0.5
+                c = n_only + 0.5
+                d = orphan + 0.5
+                odds_ratio = (a * d) / (b * c)
+                se_log_or = np.sqrt((1.0 / a) + (1.0 / b) + (1.0 / c) + (1.0 / d))
+                log_or = np.log(odds_ratio)
+                ci_low = np.exp(log_or - 1.96 * se_log_or)
+                ci_high = np.exp(log_or + 1.96 * se_log_or)
+                odds_rows.append({
+                    'SOURCE_FOLDER': folder_name,
+                    'OR': odds_ratio,
+                    'CI_LOW': ci_low,
+                    'CI_HIGH': ci_high
+                })
+
+            odds_df = pd.DataFrame(odds_rows).sort_values('OR')
+            y_pos = np.arange(len(odds_df))
+            ax_forest.errorbar(
+                odds_df['OR'],
+                y_pos,
+                xerr=[odds_df['OR'] - odds_df['CI_LOW'], odds_df['CI_HIGH'] - odds_df['OR']],
+                fmt='o',
+                color='black',
+                ecolor='black',
+                capsize=3
+            )
+            ax_forest.axvline(1.0, linestyle='--', color='red')
+            ax_forest.set_yticks(y_pos)
+            ax_forest.set_yticklabels(odds_df['SOURCE_FOLDER'])
+            ax_forest.set_xscale('log')
+            ax_forest.set_title('8. Folder-wise NMJ Odds Ratio (95% CI)')
+            ax_forest.set_xlabel('Odds Ratio (log scale)')
+            ax_forest.set_ylabel('Folder')
+
+            # 9. Per-folder correlation heatmap
+            corr_features = ['RADIUS', 'CIRCULARITY', 'MEAN_INTENSITY', 'INNERVATION_OVERLAP_PCT', 'Dist_to_Muscle_um', 'Dist_to_Neuron_um']
+            corr_records = []
+            for folder_name in folder_stats_df['SOURCE_FOLDER']:
+                df_f = master_df[master_df['SOURCE_FOLDER'] == folder_name].copy()
+                if len(df_f) < 3:
+                    continue
+                df_f['NMJ_NUM'] = df_f['is_NMJ'].astype(float)
+                row = {'SOURCE_FOLDER': folder_name}
+                for feat in corr_features:
+                    row[feat] = df_f[feat].corr(df_f['NMJ_NUM'])
+                corr_records.append(row)
+            corr_df = pd.DataFrame(corr_records).set_index('SOURCE_FOLDER') if len(corr_records) > 0 else pd.DataFrame()
+            if not corr_df.empty:
+                sns.heatmap(
+                    corr_df,
+                    cmap='coolwarm',
+                    center=0.0,
+                    vmin=-1.0,
+                    vmax=1.0,
+                    annot=True,
+                    fmt='.2f',
+                    linewidths=0.5,
+                    ax=ax_corr
                 )
-            ax_intensity_kde.set_title('5. Global Receptor Intensity KDE')
-            ax_intensity_kde.set_xlabel('Mean Fluorescence Intensity')
-            ax_intensity_kde.set_ylabel('Probability Density')
-            
-            plt.tight_layout()
-            st.pyplot(fig)
-            fig.savefig(master_png, bbox_inches='tight')
-            plt.close(fig)
+            else:
+                ax_corr.text(0.5, 0.5, 'Not enough data for\nper-folder correlations', ha='center', va='center')
+                ax_corr.set_axis_off()
+            ax_corr.set_title('9. Per-Folder Correlation with NMJ State')
+            ax_corr.set_xlabel('Feature')
+            ax_corr.set_ylabel('Folder')
+
+            # 10. Per-image NMJ rate control chart
+            per_image = (
+                master_df.groupby(['SOURCE_FOLDER', 'SOURCE_IMAGE'])
+                .agg(total_spots=('is_NMJ', 'size'), nmj_spots=('is_NMJ', 'sum'))
+                .reset_index()
+            )
+            per_image['nmj_rate_pct'] = np.where(
+                per_image['total_spots'] > 0,
+                per_image['nmj_spots'] / per_image['total_spots'] * 100.0,
+                0.0
+            )
+            sns.stripplot(
+                data=per_image,
+                x='SOURCE_FOLDER',
+                y='nmj_rate_pct',
+                color='black',
+                alpha=0.65,
+                jitter=0.25,
+                ax=ax_control
+            )
+            sns.pointplot(
+                data=per_image,
+                x='SOURCE_FOLDER',
+                y='nmj_rate_pct',
+                estimator=np.mean,
+                errorbar='sd',
+                join=False,
+                color='red',
+                markers='D',
+                scale=0.8,
+                ax=ax_control
+            )
+            ax_control.set_title('10. Per-Image NMJ Rate Control Chart')
+            ax_control.set_xlabel('Folder')
+            ax_control.set_ylabel('NMJ Rate (%)')
+            ax_control.tick_params(axis='x', rotation=45)
+
+        plt.tight_layout()
+        st.pyplot(fig)
+        fig.savefig(master_png, bbox_inches='tight')
+        plt.close(fig)
         
         st.success(f"Aggregate Dashboard generated: `{master_png}`")
         
