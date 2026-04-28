@@ -18,6 +18,24 @@ BTX_SIGNAL_CLASS_PALETTE = {
     "Orphaned": "gray",
 }
 
+BTX_SIGNAL_CLASS_LEGACY_ALIASES = {
+    "Muscle Only": "Aneural AChR clusters",
+    "Muscle only": "Aneural AChR clusters",
+    "Neuron Only": "Neuron-associated BTX signal",
+    "Neuron only": "Neuron-associated BTX signal",
+}
+
+
+def normalize_btx_signal_classes(df):
+    if df is None or len(df) == 0 or "BTX signal class" not in df.columns:
+        return df
+    out = df.copy()
+    out["BTX signal class"] = (
+        out["BTX signal class"].astype(str).str.strip().replace(BTX_SIGNAL_CLASS_LEGACY_ALIASES)
+    )
+    return out
+
+
 st.set_page_config(page_title="NMJ Pipeline", layout="wide")
 
 st.title("🔬 Single-Image NMJ Pipeline (CZI)")
@@ -469,6 +487,7 @@ if st.button("🚀 Process Pipeline", type="primary"):
                     return 'Orphaned'
             
             df_spots['BTX signal class'] = df_spots.apply(classify_quadrant, axis=1)
+            df_spots = normalize_btx_signal_classes(df_spots)
 
             # Save CSV
             out_csv = os.path.join(folder_path, f"{selected_czi.replace('.czi', '')}_analysis.csv")

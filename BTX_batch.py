@@ -19,6 +19,25 @@ BTX_SIGNAL_CLASS_PALETTE = {
     "Orphaned": "gray",
 }
 
+# Legacy strings written by older runs / per-image CSVs before terminology update
+BTX_SIGNAL_CLASS_LEGACY_ALIASES = {
+    "Muscle Only": "Aneural AChR clusters",
+    "Muscle only": "Aneural AChR clusters",
+    "Neuron Only": "Neuron-associated BTX signal",
+    "Neuron only": "Neuron-associated BTX signal",
+}
+
+
+def normalize_btx_signal_classes(df):
+    """Map legacy BTX signal class labels so plots/counts match BTX_SIGNAL_CLASS_*."""
+    if df is None or len(df) == 0 or "BTX signal class" not in df.columns:
+        return df
+    out = df.copy()
+    out["BTX signal class"] = (
+        out["BTX signal class"].astype(str).str.strip().replace(BTX_SIGNAL_CLASS_LEGACY_ALIASES)
+    )
+    return out
+
 st.set_page_config(page_title="NMJ Pipeline", layout="wide")
 
 st.title("🔬 Multiple-Image Batch NMJ Pipeline")
@@ -365,6 +384,8 @@ def estimate_auto_threshold(img_btx_norm):
 def save_all_folders_summary_png(master_df, out_png, distance_threshold_um):
     """Create a single mother-directory PNG summarizing all folders."""
     from scipy.stats import fisher_exact
+
+    master_df = normalize_btx_signal_classes(master_df)
 
     folder_stats = (
         master_df.groupby("SOURCE_FOLDER")
@@ -785,7 +806,8 @@ if run_current or run_all:
                     return 'Orphaned'
             
             df_spots['BTX signal class'] = df_spots.apply(classify_quadrant, axis=1)
-            
+            df_spots = normalize_btx_signal_classes(df_spots)
+
             out_csv = os.path.join(current_d, f"{czi_file.replace('.czi', '')}_analysis.csv")
             df_spots.to_csv(out_csv, index=False)
             
@@ -1033,7 +1055,7 @@ if run_current or run_all:
     status.write("✅ **Batch Processing Complete!**")
     
     if master_rows_written > 0:
-        master_df = pd.read_csv(master_csv)
+        master_df = normalize_btx_signal_classes(pd.read_csv(master_csv))
         st.success(f"Aggregate Master dataset uniquely saved: `{master_csv}`")
         
         st.subheader("📈 Batch Statistical Summary")
