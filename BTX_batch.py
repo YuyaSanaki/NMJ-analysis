@@ -7,7 +7,7 @@ import streamlit as st
 import aicspylibczi
 import gc
 from skimage.feature import blob_dog
-from skimage.filters import threshold_otsu
+from skimage.filters import gaussian, threshold_otsu
 from scipy.ndimage import distance_transform_edt, zoom
 from skimage.exposure import rescale_intensity
 
@@ -307,6 +307,19 @@ def compute_bg_radius_px(bg_radius_um, pixel_size_um, image_shape):
     radius_px = int(max(1, min(round(radius_px_raw), radius_cap)))
     clipped = radius_px_raw > radius_cap
     return radius_px, clipped, radius_cap
+
+
+def remove_muscle_haze(img, pixel_size_um):
+    """
+    Subtract broad BTX background so 3-10 um puncta remain.
+    Uses a fixed 30 um Gaussian sigma as a wide haze model.
+    """
+    pixel_size_safe = max(float(pixel_size_um), 1e-9)
+    bg_sigma_um = 30.0
+    bg_sigma_px = bg_sigma_um / pixel_size_safe
+    background = gaussian(img, sigma=bg_sigma_px, preserve_range=True)
+    result = img.astype(np.float32, copy=False) - background.astype(np.float32, copy=False)
+    return np.clip(result, 0.0, None).astype(img.dtype, copy=False)
 
 
 def detect_blobs_stable(img_btx_norm, min_diameter_um, max_diameter_um, pixel_size_um, threshold):
@@ -629,26 +642,12 @@ if run_current or run_all:
             # per iteration on top of the locals() bug fix.
             img_btx_raw = img_btx.copy() if save_pngs else None
 
-            # --- Background Subtraction ---
-            # Radius is controlled in physical units (um), then converted per file to pixels.
-            btx_bg_um_eff = float(btx_bg_radius_um)
-            if btx_bg_um_eff > 0:
-                from skimage.morphology import white_tophat, disk
-                radius_px, bg_clipped, bg_cap = compute_bg_radius_px(
-                    bg_radius_um=btx_bg_um_eff,
-                    pixel_size_um=pixel_size,
-                    image_shape=img_btx.shape,
-                )
-                if bg_clipped:
-                    st.warning(
-                        f"{czi_file}: Background radius clipped to safe limit "
-                        f"(~{bg_cap * float(pixel_size):.3g} μm)."
-                    )
-                # White top-hat is the direct morphological equivalent of FIJI's rolling ball background subtraction
-                img_btx = white_tophat(img_btx, disk(radius_px))
-
-            # Normalize BTX for spot detection
-            img_btx_norm = rescale_intensity(img_btx, out_range=(0.0, 1.0))
+            # --- Background Subtraction + Robust Normalization ---
+            img_btx = remove_muscle_haze(img_btx, pixel_size)
+            p_high = float(np.percentile(img_btx, 99.9))
+            if p_high <= 0:
+                p_high = 1e-5
+            img_btx_norm = np.clip(img_btx.astype(np.float32, copy=False) / p_high, 0.0, 1.0)
             threshold_used = estimate_auto_threshold(img_btx_norm) if auto_threshold else float(threshold)
             if auto_threshold:
                 st.caption(f"{czi_file}: Detection threshold used `{threshold_used:.4f}`")
