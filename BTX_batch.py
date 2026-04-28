@@ -357,7 +357,7 @@ def detect_blobs_stable(img_btx_norm, min_diameter_um, max_diameter_um, pixel_si
 
 
 def estimate_auto_threshold(img_btx_norm):
-    """Estimate a robust per-image DoG threshold from signal/noise statistics."""
+    """Estimate a robust per-image DoG threshold from upper-tail intensity."""
     values = np.asarray(img_btx_norm, dtype=np.float32).ravel()
     if values.size == 0:
         return 0.05
@@ -368,17 +368,10 @@ def estimate_auto_threshold(img_btx_norm):
         step = int(np.ceil(values.size / sample_cap))
         values = values[::step]
 
-    med = float(np.median(values))
-    mad = float(np.median(np.abs(values - med)))
-    robust_sigma = 1.4826 * mad
     p99 = float(np.percentile(values, 99.0))
-
-    # Blend robust noise floor + high-intensity guard for variable SNR data.
-    thr_from_noise = med + (4.0 * robust_sigma)
-    thr_from_high = 0.25 * p99
-    auto_thr = max(thr_from_noise, thr_from_high)
-    # Upper cap was 0.20; many bright tiles hit that limit and reported identical values.
-    return float(np.clip(auto_thr, 0.005, 0.45))
+    # Use a percentile-scaled threshold to stay in a practical DoG range across tiles.
+    auto_thr = 0.12 * p99
+    return float(np.clip(auto_thr, 0.01, 0.10))
 
 
 def save_all_folders_summary_png(master_df, out_png, distance_threshold_um):
@@ -658,6 +651,22 @@ if run_current or run_all:
                 pixel_size_um=pixel_size,
                 threshold=threshold_used,
             )
+            if auto_threshold and blobs is not None and len(blobs) == 0:
+                # One rescue pass for strict auto thresholds on low-contrast images.
+                threshold_retry = max(0.01, float(threshold_used) * 0.8)
+                blobs_retry, dog_scale_retry, sigma_cap_retry = detect_blobs_stable(
+                    img_btx_norm=img_btx_norm,
+                    min_diameter_um=min_diameter_um,
+                    max_diameter_um=max_diameter_um,
+                    pixel_size_um=pixel_size,
+                    threshold=threshold_retry,
+                )
+                if blobs_retry is not None and len(blobs_retry) > 0:
+                    blobs = blobs_retry
+                    dog_scale = dog_scale_retry
+                    sigma_cap = sigma_cap_retry
+                    threshold_used = float(threshold_retry)
+                    st.caption(f"{czi_file}: Auto-threshold rescue retry used `{threshold_used:.4f}`")
             if blobs is None:
                 st.warning(
                     f"Skipped {czi_file}: Min Spot Diameter too large for image scale. "
