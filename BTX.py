@@ -184,7 +184,17 @@ def detect_blobs_stable(img_btx_norm, min_diameter_um, max_diameter_um, pixel_si
     if min_sigma_px is None:
         return None, dog_scale, sigma_cap
 
-    blobs = blob_dog(img_for_dog, min_sigma=min_sigma_px, max_sigma=max_sigma_px, threshold=threshold)
+    threshold_for_dog = float(threshold)
+    if dog_scale < 1.0:
+        # Downsampling smooths local peaks, so keep DoG sensitivity comparable by
+        # reducing threshold slightly in scaled space (with a conservative floor).
+        threshold_for_dog *= max(0.6, dog_scale)
+    blobs = blob_dog(
+        img_for_dog,
+        min_sigma=min_sigma_px,
+        max_sigma=max_sigma_px,
+        threshold=threshold_for_dog,
+    )
     if len(blobs) == 0:
         return blobs, dog_scale, sigma_cap
 
