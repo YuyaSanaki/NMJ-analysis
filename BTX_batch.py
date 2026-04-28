@@ -367,21 +367,19 @@ def detect_blobs_stable(img_btx_norm, min_diameter_um, max_diameter_um, pixel_si
 
 
 def estimate_auto_threshold(img_btx_norm):
-    """Estimate a robust per-image DoG threshold from upper-tail intensity."""
-    values = np.asarray(img_btx_norm, dtype=np.float32).ravel()
-    if values.size == 0:
+    """
+    Robustly estimate a DoG threshold for NMJ BTX signals.
+    Uses median + K*MAD so sparse dim spots are less affected by bright clusters.
+    """
+    sample = np.asarray(img_btx_norm, dtype=np.float32)[::4, ::4].ravel()
+    if sample.size == 0:
         return 0.05
 
-    # Bound memory/CPU for very large images by sampling a fixed-size subset.
-    sample_cap = 300_000
-    if values.size > sample_cap:
-        step = int(np.ceil(values.size / sample_cap))
-        values = values[::step]
-
-    p99 = float(np.percentile(values, 99.0))
-    # Use a percentile-scaled threshold to stay in a practical DoG range across tiles.
-    auto_thr = 0.12 * p99
-    return float(np.clip(auto_thr, 0.01, 0.10))
+    median = float(np.median(sample))
+    mad = float(np.median(np.abs(sample - median)))
+    std_est = 1.4826 * mad
+    auto_thr = median + (5.0 * std_est)
+    return float(np.clip(auto_thr, 0.008, 0.10))
 
 
 def save_all_folders_summary_png(master_df, out_png, distance_threshold_um):
