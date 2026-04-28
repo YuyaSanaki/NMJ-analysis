@@ -11,6 +11,14 @@ from skimage.filters import threshold_otsu
 from scipy.ndimage import distance_transform_edt, zoom
 from skimage.exposure import rescale_intensity
 
+BTX_SIGNAL_CLASS_ORDER = ("NMJ", "Aneural AChR clusters", "Neuron-associated BTX signal", "Orphaned")
+BTX_SIGNAL_CLASS_PALETTE = {
+    "NMJ": "red",
+    "Aneural AChR clusters": "green",
+    "Neuron-associated BTX signal": "blue",
+    "Orphaned": "gray",
+}
+
 st.set_page_config(page_title="NMJ Pipeline", layout="wide")
 
 st.title("🔬 Multiple-Image Batch NMJ Pipeline")
@@ -378,8 +386,8 @@ def save_all_folders_summary_png(master_df, out_png, distance_threshold_um):
     )
 
     total_nmj = int((master_df["BTX signal class"] == "NMJ").sum())
-    total_m_only = int((master_df["BTX signal class"] == "Muscle Only").sum())
-    total_n_only = int((master_df["BTX signal class"] == "Neuron Only").sum())
+    total_m_only = int((master_df["BTX signal class"] == "Aneural AChR clusters").sum())
+    total_n_only = int((master_df["BTX signal class"] == "Neuron-associated BTX signal").sum())
     total_orph = int((master_df["BTX signal class"] == "Orphaned").sum())
     _, global_fisher_p = fisher_exact([[total_nmj, total_m_only], [total_n_only, total_orph]])
 
@@ -434,7 +442,8 @@ def save_all_folders_summary_png(master_df, out_png, distance_threshold_um):
         x="Dist_to_Muscle_um",
         y="Dist_to_Neuron_um",
         hue="BTX signal class",
-        palette={"NMJ": "red", "Muscle Only": "green", "Neuron Only": "blue", "Orphaned": "gray"},
+        hue_order=BTX_SIGNAL_CLASS_ORDER,
+        palette=BTX_SIGNAL_CLASS_PALETTE,
         alpha=0.35,
         s=18,
         ax=ax_proximity,
@@ -769,9 +778,9 @@ if run_current or run_all:
                 if row['Dist_to_Muscle_um'] <= distance_threshold_um and row['Dist_to_Neuron_um'] <= distance_threshold_um:
                     return 'NMJ'
                 elif row['Dist_to_Muscle_um'] <= distance_threshold_um:
-                    return 'Muscle Only'
+                    return 'Aneural AChR clusters'
                 elif row['Dist_to_Neuron_um'] <= distance_threshold_um:
-                    return 'Neuron Only'
+                    return 'Neuron-associated BTX signal'
                 else:
                     return 'Orphaned'
             
@@ -794,8 +803,8 @@ if run_current or run_all:
                 "File": czi_file,
                 "Total Spots": total_spots,
                 "NMJs (Both)": nmj_count,
-                "Near Muscle Only": near_m_only,
-                "Near Neuron Only": near_n_only,
+                "Near Aneural AChR clusters": near_m_only,
+                "Near Neuron-associated BTX signal": near_n_only,
                 "Orphaned": orphaned,
                 "Formation Rate (%)": formation_rate,
                 "Fisher P-Value": fisher_p
@@ -861,8 +870,9 @@ if run_current or run_all:
             # Graph 6: Circularity KDE
             if len(df_spots) > 0:
                 sns.kdeplot(
-                    data=df_spots, x='CIRCULARITY', hue='is_NMJ',
-                    palette={True: 'red', False: 'gray'}, ax=ax_circ_kde,
+                    data=df_spots, x='CIRCULARITY', hue='BTX signal class',
+                    hue_order=BTX_SIGNAL_CLASS_ORDER,
+                    palette=BTX_SIGNAL_CLASS_PALETTE, ax=ax_circ_kde,
                     common_norm=False, fill=True, clip=(0, 1)
                 )
             ax_circ_kde.set_title('3. NMJ Circularity KDE')
@@ -873,8 +883,9 @@ if run_current or run_all:
             # Graph 7: Size KDE
             if len(df_spots) > 0:
                 sns.kdeplot(
-                    data=df_spots, x='RADIUS', hue='is_NMJ',
-                    palette={True: 'red', False: 'gray'}, ax=ax_size_kde,
+                    data=df_spots, x='RADIUS', hue='BTX signal class',
+                    hue_order=BTX_SIGNAL_CLASS_ORDER,
+                    palette=BTX_SIGNAL_CLASS_PALETTE, ax=ax_size_kde,
                     common_norm=False, fill=True
                 )
             ax_size_kde.set_title('2. NMJ Size KDE')
@@ -884,8 +895,9 @@ if run_current or run_all:
             # Graph 8: NMJ Innervation Histogram (Bar Graph)
             if len(df_spots) > 0:
                 sns.histplot(
-                    data=df_spots, x='INNERVATION_OVERLAP_PCT', hue='is_NMJ',
-                    palette={True: 'red', False: 'gray'}, ax=ax_overlap_kde,
+                    data=df_spots, x='INNERVATION_OVERLAP_PCT', hue='BTX signal class',
+                    hue_order=BTX_SIGNAL_CLASS_ORDER,
+                    palette=BTX_SIGNAL_CLASS_PALETTE, ax=ax_overlap_kde,
                     common_norm=False, multiple="layer"
                 )
             ax_overlap_kde.set_title('4. NMJ Innervation Distribution')
@@ -895,8 +907,9 @@ if run_current or run_all:
             # Graph 9: Mean Intensity KDE
             if len(df_spots) > 0:
                 sns.kdeplot(
-                    data=df_spots, x='MEAN_INTENSITY', hue='is_NMJ',
-                    palette={True: 'red', False: 'gray'}, ax=ax_intensity_kde,
+                    data=df_spots, x='MEAN_INTENSITY', hue='BTX signal class',
+                    hue_order=BTX_SIGNAL_CLASS_ORDER,
+                    palette=BTX_SIGNAL_CLASS_PALETTE, ax=ax_intensity_kde,
                     common_norm=False, fill=True
                 )
             ax_intensity_kde.set_title('5. Receptor Intensity KDE')
@@ -906,7 +919,8 @@ if run_current or run_all:
             # Graph 1: Scatter NMJ
             sns.scatterplot(
                 data=df_spots, x='Dist_to_Muscle_um', y='Dist_to_Neuron_um',
-                hue='BTX signal class', palette={'NMJ': 'red', 'Muscle Only': 'green', 'Neuron Only': 'blue', 'Orphaned': 'gray'}, ax=ax_scatter
+                hue='BTX signal class', hue_order=BTX_SIGNAL_CLASS_ORDER,
+                palette=BTX_SIGNAL_CLASS_PALETTE, ax=ax_scatter
             )
             ax_scatter.axvline(x=distance_threshold_um, color='black', linestyle='--')
             ax_scatter.axhline(y=distance_threshold_um, color='black', linestyle='--')
@@ -1063,14 +1077,15 @@ if run_current or run_all:
         # 1. NMJ Proximity Scatterplot
         from scipy.stats import fisher_exact
         total_nmj = len(master_df[master_df['BTX signal class'] == 'NMJ'])
-        total_m_only = len(master_df[master_df['BTX signal class'] == 'Muscle Only'])
-        total_n_only = len(master_df[master_df['BTX signal class'] == 'Neuron Only'])
+        total_m_only = len(master_df[master_df['BTX signal class'] == 'Aneural AChR clusters'])
+        total_n_only = len(master_df[master_df['BTX signal class'] == 'Neuron-associated BTX signal'])
         total_orph = len(master_df[master_df['BTX signal class'] == 'Orphaned'])
         _, global_fisher_p = fisher_exact([[total_nmj, total_m_only], [total_n_only, total_orph]])
 
         sns.scatterplot(
             data=master_df, x='Dist_to_Muscle_um', y='Dist_to_Neuron_um',
-            hue='BTX signal class', palette={'NMJ': 'red', 'Muscle Only': 'green', 'Neuron Only': 'blue', 'Orphaned': 'gray'}, ax=ax_scatter
+            hue='BTX signal class', hue_order=BTX_SIGNAL_CLASS_ORDER,
+            palette=BTX_SIGNAL_CLASS_PALETTE, ax=ax_scatter
         )
         ax_scatter.axvline(x=distance_threshold_um, color='black', linestyle='--')
         ax_scatter.axhline(y=distance_threshold_um, color='black', linestyle='--')
@@ -1083,8 +1098,9 @@ if run_current or run_all:
         # 2. NMJ Size KDE
         if len(master_df) > 0:
             sns.kdeplot(
-                data=master_df, x='RADIUS', hue='is_NMJ',
-                palette={True: 'red', False: 'gray'}, ax=ax_size_kde,
+                data=master_df, x='RADIUS', hue='BTX signal class',
+                hue_order=BTX_SIGNAL_CLASS_ORDER,
+                palette=BTX_SIGNAL_CLASS_PALETTE, ax=ax_size_kde,
                 common_norm=False, fill=True
             )
         ax_size_kde.set_title('2. Global NMJ Size KDE')
@@ -1094,8 +1110,9 @@ if run_current or run_all:
         # 3. Circularity KDE
         if len(master_df) > 0:
             sns.kdeplot(
-                data=master_df, x='CIRCULARITY', hue='is_NMJ',
-                palette={True: 'red', False: 'gray'}, ax=ax_circ_kde,
+                data=master_df, x='CIRCULARITY', hue='BTX signal class',
+                hue_order=BTX_SIGNAL_CLASS_ORDER,
+                palette=BTX_SIGNAL_CLASS_PALETTE, ax=ax_circ_kde,
                 common_norm=False, fill=True, clip=(0, 1)
             )
         ax_circ_kde.set_title('3. Global NMJ Circularity KDE')
@@ -1106,8 +1123,9 @@ if run_current or run_all:
         # 4. Innervation Histogram
         if len(master_df) > 0:
             sns.histplot(
-                data=master_df, x='INNERVATION_OVERLAP_PCT', hue='is_NMJ',
-                palette={True: 'red', False: 'gray'}, ax=ax_overlap_kde,
+                data=master_df, x='INNERVATION_OVERLAP_PCT', hue='BTX signal class',
+                hue_order=BTX_SIGNAL_CLASS_ORDER,
+                palette=BTX_SIGNAL_CLASS_PALETTE, ax=ax_overlap_kde,
                 common_norm=False, multiple="layer"
             )
         ax_overlap_kde.set_title('4. Global NMJ Innervation Distribution')
@@ -1117,8 +1135,9 @@ if run_current or run_all:
         # 5. Mean Intensity KDE
         if len(master_df) > 0:
             sns.kdeplot(
-                data=master_df, x='MEAN_INTENSITY', hue='is_NMJ',
-                palette={True: 'red', False: 'gray'}, ax=ax_intensity_kde,
+                data=master_df, x='MEAN_INTENSITY', hue='BTX signal class',
+                hue_order=BTX_SIGNAL_CLASS_ORDER,
+                palette=BTX_SIGNAL_CLASS_PALETTE, ax=ax_intensity_kde,
                 common_norm=False, fill=True
             )
         ax_intensity_kde.set_title('5. Global Receptor Intensity KDE')
@@ -1153,7 +1172,8 @@ if run_current or run_all:
                 x='RADIUS',
                 y='INNERVATION_OVERLAP_PCT',
                 hue='BTX signal class',
-                palette={'NMJ': 'red', 'Muscle Only': 'green', 'Neuron Only': 'blue', 'Orphaned': 'gray'},
+                hue_order=BTX_SIGNAL_CLASS_ORDER,
+                palette=BTX_SIGNAL_CLASS_PALETTE,
                 alpha=0.35,
                 s=18,
                 ax=ax_size_overlap
@@ -1168,8 +1188,8 @@ if run_current or run_all:
                 folder_name = fs_row['SOURCE_FOLDER']
                 df_f = master_df[master_df['SOURCE_FOLDER'] == folder_name]
                 nmj = int((df_f['BTX signal class'] == 'NMJ').sum())
-                m_only = int((df_f['BTX signal class'] == 'Muscle Only').sum())
-                n_only = int((df_f['BTX signal class'] == 'Neuron Only').sum())
+                m_only = int((df_f['BTX signal class'] == 'Aneural AChR clusters').sum())
+                n_only = int((df_f['BTX signal class'] == 'Neuron-associated BTX signal').sum())
                 orphan = int((df_f['BTX signal class'] == 'Orphaned').sum())
 
                 # Haldane-Anscombe correction for stability when any cell is zero

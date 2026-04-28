@@ -10,6 +10,14 @@ from skimage.filters import threshold_otsu
 from scipy.ndimage import distance_transform_edt, zoom
 from skimage.exposure import rescale_intensity
 
+BTX_SIGNAL_CLASS_ORDER = ("NMJ", "Aneural AChR clusters", "Neuron-associated BTX signal", "Orphaned")
+BTX_SIGNAL_CLASS_PALETTE = {
+    "NMJ": "red",
+    "Aneural AChR clusters": "green",
+    "Neuron-associated BTX signal": "blue",
+    "Orphaned": "gray",
+}
+
 st.set_page_config(page_title="NMJ Pipeline", layout="wide")
 
 st.title("🔬 Single-Image NMJ Pipeline (CZI)")
@@ -443,8 +451,8 @@ if st.button("🚀 Process Pipeline", type="primary"):
             sm3.metric("NMJ Formation Rate", f"{formation_rate:.2f}%")
             
             st.markdown("### Proximity Statistics")
-            st.markdown(f"- **Near Muscle Only:** {near_m_only}")
-            st.markdown(f"- **Near Neuron Only:** {near_n_only}")
+            st.markdown(f"- **Near Aneural AChR clusters:** {near_m_only}")
+            st.markdown(f"- **Near Neuron-associated BTX signal:** {near_n_only}")
             st.markdown(f"- **Orphaned (Far from both):** {orphaned}")
             sig_star = "***" if fisher_p < 0.001 else "**" if fisher_p < 0.01 else "*" if fisher_p < 0.05 else "ns"
             st.markdown(f"- **Fisher's Exact P-Value:** `{fisher_p:.4g}` {sig_star} *(Measures if spot recruitment to Muscle is statistically associated with recruitment to Neuron)*")
@@ -454,9 +462,9 @@ if st.button("🚀 Process Pipeline", type="primary"):
                 if row['Dist_to_Muscle_um'] <= distance_threshold_um and row['Dist_to_Neuron_um'] <= distance_threshold_um:
                     return 'NMJ'
                 elif row['Dist_to_Muscle_um'] <= distance_threshold_um:
-                    return 'Muscle Only'
+                    return 'Aneural AChR clusters'
                 elif row['Dist_to_Neuron_um'] <= distance_threshold_um:
-                    return 'Neuron Only'
+                    return 'Neuron-associated BTX signal'
                 else:
                     return 'Orphaned'
             
@@ -521,8 +529,9 @@ if st.button("🚀 Process Pipeline", type="primary"):
             # Graph 6: Circularity KDE
             if len(df_spots) > 0:
                 sns.kdeplot(
-                    data=df_spots, x='CIRCULARITY', hue='is_NMJ',
-                    palette={True: 'red', False: 'gray'}, ax=ax_circ_kde,
+                    data=df_spots, x='CIRCULARITY', hue='BTX signal class',
+                    hue_order=BTX_SIGNAL_CLASS_ORDER,
+                    palette=BTX_SIGNAL_CLASS_PALETTE, ax=ax_circ_kde,
                     common_norm=False, fill=True, clip=(0, 1)
                 )
             ax_circ_kde.set_title('3. NMJ Circularity KDE')
@@ -533,8 +542,9 @@ if st.button("🚀 Process Pipeline", type="primary"):
             # Graph 7: Size KDE
             if len(df_spots) > 0:
                 sns.kdeplot(
-                    data=df_spots, x='RADIUS', hue='is_NMJ',
-                    palette={True: 'red', False: 'gray'}, ax=ax_size_kde,
+                    data=df_spots, x='RADIUS', hue='BTX signal class',
+                    hue_order=BTX_SIGNAL_CLASS_ORDER,
+                    palette=BTX_SIGNAL_CLASS_PALETTE, ax=ax_size_kde,
                     common_norm=False, fill=True
                 )
             ax_size_kde.set_title('2. NMJ Size KDE')
@@ -544,8 +554,9 @@ if st.button("🚀 Process Pipeline", type="primary"):
             # Graph 8: NMJ Innervation Histogram (Bar Graph)
             if len(df_spots) > 0:
                 sns.histplot(
-                    data=df_spots, x='INNERVATION_OVERLAP_PCT', hue='is_NMJ',
-                    palette={True: 'red', False: 'gray'}, ax=ax_overlap_kde,
+                    data=df_spots, x='INNERVATION_OVERLAP_PCT', hue='BTX signal class',
+                    hue_order=BTX_SIGNAL_CLASS_ORDER,
+                    palette=BTX_SIGNAL_CLASS_PALETTE, ax=ax_overlap_kde,
                     common_norm=False, multiple="layer"
                 )
             ax_overlap_kde.set_title('4. NMJ Innervation Distribution')
@@ -555,8 +566,9 @@ if st.button("🚀 Process Pipeline", type="primary"):
             # Graph 9: Mean Intensity KDE
             if len(df_spots) > 0:
                 sns.kdeplot(
-                    data=df_spots, x='MEAN_INTENSITY', hue='is_NMJ',
-                    palette={True: 'red', False: 'gray'}, ax=ax_intensity_kde,
+                    data=df_spots, x='MEAN_INTENSITY', hue='BTX signal class',
+                    hue_order=BTX_SIGNAL_CLASS_ORDER,
+                    palette=BTX_SIGNAL_CLASS_PALETTE, ax=ax_intensity_kde,
                     common_norm=False, fill=True
                 )
             ax_intensity_kde.set_title('5. Receptor Intensity KDE')
@@ -566,7 +578,8 @@ if st.button("🚀 Process Pipeline", type="primary"):
             # Graph 1: Scatter NMJ
             sns.scatterplot(
                 data=df_spots, x='Dist_to_Muscle_um', y='Dist_to_Neuron_um',
-                hue='BTX signal class', palette={'NMJ': 'red', 'Muscle Only': 'green', 'Neuron Only': 'blue', 'Orphaned': 'gray'}, ax=ax_scatter
+                hue='BTX signal class', hue_order=BTX_SIGNAL_CLASS_ORDER,
+                palette=BTX_SIGNAL_CLASS_PALETTE, ax=ax_scatter
             )
             ax_scatter.axvline(x=distance_threshold_um, color='black', linestyle='--')
             ax_scatter.axhline(y=distance_threshold_um, color='black', linestyle='--')
