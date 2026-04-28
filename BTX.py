@@ -37,41 +37,68 @@ selected_czi = st.selectbox("🔬 Select CZI File", czi_files)
 czi_path = os.path.join(folder_path, selected_czi)
 
 # --- 2. Load CZI and Configure Channels ---
+
+
+def _czi_channel_zmax_2d(czi, c_idx, dims0):
+    """Z-max to (Y, X) with at most one Z-plane in memory (see BTX_batch.load_czi_image)."""
+    z_rng = dims0.get("Z", (0, 1))
+    z0, z1 = int(z_rng[0]), int(z_rng[1])
+    if z1 - z0 <= 1:
+        img, _ = czi.read_image(C=c_idx)
+        arr = np.squeeze(np.asarray(img))
+        while arr.ndim > 2:
+            arr = np.max(arr, axis=0)
+        return arr.copy() if not arr.flags.owndata else arr
+    acc = None
+    for zi in range(z0, z1):
+        img, _ = czi.read_image(C=c_idx, Z=zi)
+        plane = np.squeeze(np.asarray(img))
+        while plane.ndim > 2:
+            plane = np.max(plane, axis=0)
+        if acc is None:
+            acc = plane.copy()
+        else:
+            np.maximum(acc, plane, out=acc)
+        del img
+    return acc
+
+
 @st.cache_data(show_spinner=False)
 def load_czi_image(path):
-    czi = aicspylibczi.CziFile(path)
-    img, _ = czi.read_image()
-    img_sq = np.squeeze(img)
-    # Often shape is (C, Z, Y, X)
-    if img_sq.ndim == 4:
-        # Max intensity projection over Z
-        img_sq = np.max(img_sq, axis=1)
-    
-    # fallback, if dimensions are weird
-    if img_sq.ndim < 3:
-        # if only a single 2D image, treat it as 1 channel
-        img_sq = np.expand_dims(img_sq, axis=0)
-        
-    # we expect (C, Y, X)
-    # Detect (Y, X, C) layout: last axis small (≤10, typical channel count) and smaller than first
-    if img_sq.ndim == 3 and img_sq.shape[-1] <= 10 and img_sq.shape[-1] < img_sq.shape[0]:
-        img_sq = np.moveaxis(img_sq, -1, 0)
-        
-    # --- Extract Pixel Size (Microns) ---
-    pixel_size_um = 1.0 # Default fallback
+    czi = None
     try:
-        # Zeiss stores scaling in elements like <Distance Id="X"><Value>1.03e-07</Value>
-        for dist in czi.meta.findall('.//Distance'):
-            if dist.attrib.get('Id') == 'X':
-                val = dist.find('Value')
-                if val is not None:
-                    # Values are saved natively in pure meters. Convert to micrometers.
-                    pixel_size_um = float(val.text) * 1e6
-                    break
-    except Exception:
-        pass
-        
-    return img_sq, pixel_size_um
+        czi = aicspylibczi.CziFile(path)
+        dims0 = czi.get_dims_shape()[0]
+        c_rng = dims0.get("C", (0, 1))
+        c0, c1 = int(c_rng[0]), int(c_rng[1])
+        planes = [_czi_channel_zmax_2d(czi, c_idx, dims0) for c_idx in range(c0, c1)]
+        img_sq = np.stack(planes, axis=0)
+        if img_sq.ndim < 3:
+            img_sq = np.expand_dims(img_sq, axis=0)
+        if img_sq.ndim == 3 and img_sq.shape[-1] <= 10 and img_sq.shape[-1] < img_sq.shape[0]:
+            img_sq = np.moveaxis(img_sq, -1, 0)
+
+        # --- Extract Pixel Size (Microns) ---
+        pixel_size_um = 1.0  # Default fallback
+        try:
+            # Zeiss stores scaling in elements like <Distance Id="X"><Value>1.03e-07</Value>
+            for dist in czi.meta.findall('.//Distance'):
+                if dist.attrib.get('Id') == 'X':
+                    val = dist.find('Value')
+                    if val is not None:
+                        # Values are saved natively in pure meters. Convert to micrometers.
+                        pixel_size_um = float(val.text) * 1e6
+                        break
+        except Exception:
+            pass
+
+        return img_sq, pixel_size_um
+    finally:
+        if czi is not None and hasattr(czi, "close"):
+            try:
+                czi.close()
+            except Exception:
+                pass
 
 
 def compute_sigma_bounds_px(min_sigma_um, max_sigma_um, pixel_size_um, image_shape):
@@ -139,6 +166,14 @@ def detect_blobs_stable(img_btx_norm, min_diameter_um, max_diameter_um, pixel_si
     if dog_scale != 1.0:
         blobs[:, :2] = blobs[:, :2] / dog_scale
         blobs[:, 2] = blobs[:, 2] / dog_scale
+    # DoG `min_sigma` / `max_sigma` only approximate the UI "diameter" range; the 0.5 px
+    # lower bound in compute_sigma_bounds_px and skimage's discrete scale steps can still
+    # yield small effective radii. Enforce true physical min/max *diameter* (µm) here;
+    # RADIUS in outputs is (column 2) * pixel_size, so diameter_um = 2 * r_px * um/pix.
+    r_um = blobs[:, 2] * pixel_size_safe
+    d_um = 2.0 * r_um
+    ok = (d_um >= float(min_diameter_um)) & (d_um <= float(max_diameter_um))
+    blobs = blobs[ok]
     return blobs, dog_scale, sigma_cap
 
 
@@ -163,7 +198,8 @@ def estimate_auto_threshold(img_btx_norm):
     thr_from_noise = med + (4.0 * robust_sigma)
     thr_from_high = 0.25 * p99
     auto_thr = max(thr_from_noise, thr_from_high)
-    return float(np.clip(auto_thr, 0.005, 0.20))
+    # Upper cap was 0.20; many bright tiles hit that limit and reported identical values.
+    return float(np.clip(auto_thr, 0.005, 0.45))
 
 with st.spinner("Loading CZI..."):
     try:

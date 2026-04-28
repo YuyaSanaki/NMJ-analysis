@@ -1,5 +1,15 @@
+# Run ONE app at a time (mutually exclusive profiles). Only one port (8501) and the full
+# Docker VM memory budget goes to that container — better for large CZI / OOM avoidance.
+#
+#   Single-image UI:  docker compose --profile single up --build
+#   Batch UI:         docker compose --profile batch up --build
+#
+# Still raise Docker Desktop → Settings → Resources → Memory if analysis OOMs (e.g. 12G+).
+
 services:
   single-image-nmj-analysis:
+    profiles:
+      - single
     build: .
     volumes:
       - .:/app
@@ -9,14 +19,28 @@ services:
       - PYTHONUNBUFFERED=1
       - MPLBACKEND=Agg
     command: streamlit run BTX.py --server.port=8501 --server.address=0.0.0.0 --server.fileWatcherType=none --server.runOnSave=false --browser.gatherUsageStats=false
+    deploy:
+      resources:
+        limits:
+          memory: 12G
+        reservations:
+          memory: 4G
 
   multiple-image-nmj-analysis:
+    profiles:
+      - batch
     build: .
     volumes:
       - .:/app
     ports:
-      - "8502:8501"
+      - "8501:8501"
     environment:
       - PYTHONUNBUFFERED=1
       - MPLBACKEND=Agg
     command: streamlit run BTX_batch.py --server.port=8501 --server.address=0.0.0.0 --server.fileWatcherType=none --server.runOnSave=false --browser.gatherUsageStats=false
+    deploy:
+      resources:
+        limits:
+          memory: 12G
+        reservations:
+          memory: 4G

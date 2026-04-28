@@ -1,89 +1,92 @@
 # 🔬 Neuromuscular Junction (NMJ) Analysis Pipeline
 
-A state-of-the-art, fully containerized image analysis toolkit designed to automatically detect, measure, and statistically categorize Neuromuscular Junctions (NMJs) directly from raw multi-channel confocal `.czi` files. Designed as a superior, fully automated replacement for FIJI/TrackMate workflows.
+A fully containerized image analysis toolkit that detects, measures, and classifies Neuromuscular Junctions (NMJs) from multi-channel confocal `.czi` files—intended as a streamlined alternative to FIJI / TrackMate–heavy workflows.
 
 ## 🏗 System Architecture
 
-This project runs locally entirely inside Docker, utilizing `Streamlit` to generate powerful UI dashboards. It is structured into a dynamic **Dual-Service Architecture**:
+The app runs in Docker with **Streamlit** UIs. **Single-image** and **batch** are separate Compose **profiles**: you start **one** service at a time so only **one** process and **one** port are active, and the configured **memory limit** applies to that container (helpful for large tiles and deep Z-stacks).
 
-- **🤖 Single-Image Pipeline (Port 8501):** Interactive dashboard useful for dialing in spot detection (DoG) parameters, morphological background subtraction, and Euclidean Distance thresholding on a single `.czi` file.
-- **🚀 Bulk Batch Pipeline (Port 8502):** A high-throughput pipeline engineered to chew through entire folders of CZIs. It features dynamic JSON configuration saving and complex per-file channel configurations.
+| Profile | Command | App |
+|--------|---------|-----|
+| `single` | `docker compose --profile single up --build` | `BTX.py` — one `.czi`, tune detection and thresholds |
+| `batch` | `docker compose --profile batch up --build` | `BTX_batch.py` — whole folders, JSON configs, per-file mapping |
+
+**URL (both modes):** `http://localhost:8501`
+
+Plain `docker compose up` with **no** `--profile` does not start either app (by design).
 
 ## 🚀 Quick Start
 
-1. Start the Docker containers:
-```bash
-docker compose up --build
-```
-2. Navigate to your desired pipeline in the browser:
-   * **Single Image Mode:** `http://localhost:8501`
-   * **Batch Mode:** `http://localhost:8502`
+1. **Start one pipeline** (examples above). Add `-d` to run in the background.
 
-3. **Data Mounting:** Place any `.czi` files into subfolders inside this project directory. The Docker container maps the local folder into `/app` so your data is immediately visible in the UI.
+2. Open **`http://localhost:8501`** in the browser.
 
-4. **Stop the containers** when you are done:
-```bash
-docker compose down
-or
-command + C
-```
+3. **Data:** Put `.czi` files in subfolders under this project. The compose file bind-mounts the repo to `/app` inside the container.
+
+4. **Stop:** `Ctrl+C` in the terminal, or from another shell:
+
+   ```bash
+   docker compose --profile single down
+   # or
+   docker compose --profile batch down
+   ```
+
+5. **Switch modes:** bring the running stack down, then start the other profile (single vs batch).
+
+## 🧠 Docker memory
+
+`docker-compose.yml` sets a **12 GB** memory limit per service. If you still see exits with code **137** (OOM), raise **Docker Desktop → Settings → Resources → Memory** so the Linux VM can supply that headroom and leave margin for the host OS.
+
+For very long batch runs, use the **“Save per-image NMJ_Plot PNGs”** option wisely (disabling it reduces peak memory).
 
 ---
 
 ## 🎨 Features & Methodologies
 
-### 1. Robust Spot Detection (Difference of Gaussians)
-The system uses skimage's `blob_dog` algorithm to detect Acetylcholine Receptors (BTX channel) accurately. To prevent artifacts from background fluorescence, it utilizes an auto-optimized **Morphological White Top-Hat Filter** (the mathematical equivalent of FIJI's rolling-ball background subtraction) before spot detection.
+### 1. Robust spot detection (Difference of Gaussians)
 
-Spot-size controls are now defined as **diameter thresholds in μm**:
+The pipeline uses skimage’s `blob_dog` on the BTX (receptor) channel. A **morphological white top-hat** (rolling-ball–style background suppression) runs first when enabled.
 
-- **Min Spot Diameter (μm)**
-- **Max Spot Diameter (μm)**
-
-Internally, `blob_dog` still works on Gaussian sigma. The app converts diameter to sigma automatically using:
+Spot size in the UI is expressed as **diameter in μm** (min / max). Internally, diameters are converted to Gaussian sigmas for DoG:
 
 `sigma_um = diameter_um / (2 * sqrt(2))`
 
-This keeps the UI biologically intuitive while preserving mathematically correct DoG behavior.
+### 2. Physical units (μm)
 
-### 2. Actual Physical Measurements
-The pipeline fundamentally binds to reality by actively extracting the raw `Distance` scaling vectors (μm/pixel) from the intrinsic `.czi` metadata. All algorithms, boundaries, and outputs are dynamically mapped directly into **physical Micrometers (μm)**, completely isolating the math from arbitrary changes in microscope magnifications or pixel resolutions.
+Pixel size **μm/pixel** is read from `.czi` metadata where possible. Distances and spot radii are reported in **micrometers**.
 
-To improve stability on very large spot-size settings (for example `5-20 μm` diameters), the pipeline includes memory-safe guards:
+On large spot-diameter settings, the code may downscale for DoG stability and map spots back to full resolution; DoG sigma and background radius are capped to limit memory use.
 
-- Adaptive downscaling during DoG detection for large sigma requests, then remaps detected spots back to original coordinates.
-- Safe caps for DoG sigma and morphological background radius to avoid container OOM crashes.
+### 3. Biological and spatial metrics
 
-### 3. Biological & Spatial Exocentrism
-For every detected receptor spot, the script executes highly localized Otsu thresholding across multiple spatial channels to extract deep contextual variables:
+For each spot, localized Otsu and masks support:
 
-* **`Dist_to_Muscle_um` / `Dist_to_Neuron_um`**: A physical Euclidean Distance map is run against raw thresholded Muscle and Neuron channel masks. A threshold (e.g., `≤ 1.0 μm`) acts as the gating logic to classify a spot as a "Functional NMJ" vs an orphaned/background spot.
-* **`INNERVATION_OVERLAP_PCT`**: Calculates what quantitative percentage of the receptor's physical 2D area (mask) is literally overlapped/covered by Neural signal, distinguishing healthy innervations from partially retracted or degenerating ones.
-* **`MEAN_INTENSITY`**: Returns the average raw fluorescence directly inside the segmented receptor boundary.
-* **`CIRCULARITY`**: Computes standard geometric circularity (`4*pi*Area / Perimeter^2`) to measure morphological structure (e.g., differentiating mature "pretzels" from dense oval plaques).
+* **`Dist_to_Muscle_um` / `Dist_to_Neuron_um`:** EDT from thresholded muscle and neuron masks; an NMJ “functional” boundary in μm gates NMJ vs non-NMJ.
+* **`INNERVATION_OVERLAP_PCT`:** Overlap of the spot mask with the neuron channel.
+* **`MEAN_INTENSITY`:** Mean raw intensity inside the spot mask.
+* **`CIRCULARITY`:** `4π·area / perimeter²` on the segmented spot region.
 
 ---
 
-## 🔁 Using the Batch System
+## 🔁 Using the batch system
 
-On `localhost:8502` you can process entire datasets seamlessly:
-1. Select a dataset folder containing your CZIs.
-2. Formulate a **Config Template** (Channel mapping) at the top of the screen.
-3. Click **"📋 Paste Template to ALL Images"** to rapidly apply the mapping to all detected files. 
-   *(Note: The UI inherently safeguards actual biological pixel sizes from being pasted over!)*
-4. Expand individual files and use the **"🚫 Exclude"** toggles or manually adjust channel mappings on an individual basis if certain scans failed or differ.
-5. Save your session using **"💾 Save Settings to Folder"** so you can pick up where you left off tomorrow.
-6. Click **Run Batch Analysis**.
+With **`docker compose --profile batch up --build`**:
+
+1. Select a folder that contains your `.czi` files.
+2. Set the **config template** (muscle / neuron / BTX channels) at the top.
+3. Use **“Paste Template to ALL Images”** or per-file expanders. Pixel sizes from metadata are not overwritten by paste where noted.
+4. **Exclude** bad files with the skip checkboxes if needed; **Save Settings to Folder** writes `channel_mapping_config.json` for the next run.
+5. **Run Batch Analysis (Current Folder)** or **(ALL Folders)** as required.
 
 ---
 
-## 📊 Outputs
+## 📊 Outputs (batch)
 
-The batch system will deposit multiple artifacts directly into the source folder:
+Artifacts are written next to the data (and optional project-wide master CSVs when using **ALL Folders**):
 
-1. **`BATCH_MASTER_RESULTS.csv`**: A massive concatenated dataframe tracking every single segmented spot, tagged with the `SOURCE_IMAGE` so you can do grouping stats in R or GraphPad Prism.
-2. **`[Filename]_analysis.csv`**: Granular backups of the data per-image.
-3. **`[Filename]_NMJ_Plot.png`**: A beautiful aggregated massive 9-panel PNG generated for every image!
-   * Row 1: Proximity Scatter Plot, Size Distribution KDE, Circularity Distribution KDE
-   * Row 2: Innervation Overlap KDE, Receptor Intensity KDE, Pure Cleaned BTX Image
-   * Row 3: Spots overlaid on BTX, Composite Images overlaid with ALL spots, and Composite Images overlaid exclusively with white indicator-arrows pointing out functional NMJs.
+1. **`BATCH_MASTER_RESULTS.csv`** (or **`ALL_FOLDERS_MASTER_RESULTS.csv`**) — combined spot table with `SOURCE_FOLDER` / `SOURCE_IMAGE` where applicable.
+2. **`[Filename]_analysis.csv`** — per-image spot table.
+3. **`[Filename]_NMJ_Plot.png`** — 9-panel figure (optional during batch; can be turned off in the UI).
+4. Summary PNGs such as **`BATCH_SUMMARY.png`** / **`ALL_FOLDERS_SUMMARY.png`** when a batch run completes with data.
+
+Row layout of the per-image 9-panel plot: row 1 — proximity scatter, size KDE, circularity KDE; row 2 — innervation / intensity distributions and BTX view; row 3 — BTX with spots, composite with spots, composite with NMJ-only arrows.

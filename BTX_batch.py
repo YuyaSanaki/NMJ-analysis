@@ -37,22 +37,30 @@ if not czi_files:
 # --- 2. Extract Metadata & Config for Batch ---
 @st.cache_data(show_spinner=False)
 def fast_czi_meta(path):
-    czi = aicspylibczi.CziFile(path)
-    dims = czi.get_dims_shape()[0]
-    cc = dims.get('C', [0, 4])
-    num_channels = cc[1] - cc[0]
-    
-    pixel_size_um = 1.0 # Default fallback
+    czi = None
     try:
-        for dist in czi.meta.findall('.//Distance'):
-            if dist.attrib.get('Id') == 'X':
-                val = dist.find('Value')
-                if val is not None:
-                    pixel_size_um = float(val.text) * 1e6
-                    break
-    except Exception:
-        pass
-    return num_channels, pixel_size_um
+        czi = aicspylibczi.CziFile(path)
+        dims = czi.get_dims_shape()[0]
+        cc = dims.get('C', [0, 4])
+        num_channels = cc[1] - cc[0]
+
+        pixel_size_um = 1.0  # Default fallback
+        try:
+            for dist in czi.meta.findall('.//Distance'):
+                if dist.attrib.get('Id') == 'X':
+                    val = dist.find('Value')
+                    if val is not None:
+                        pixel_size_um = float(val.text) * 1e6
+                        break
+        except Exception:
+            pass
+        return num_channels, pixel_size_um
+    finally:
+        if czi is not None and hasattr(czi, "close"):
+            try:
+                czi.close()
+            except Exception:
+                pass
 
 st.subheader("⚙️ Batch Channel Mapping")
 
@@ -163,19 +171,86 @@ if len(czi_files) > 0:
 
 st.divider()
 
+
+def _czi_channel_zmax_2d(czi, c_idx, dims0):
+    """Return a single (Y, X) plane as Z-max projection with *one Z plane in RAM at a time*.
+
+    ``read_image(C=...)`` loads the full Z stack for that channel (e.g. 25×2576×2576 ≈ 316 MB
+    for `0714M-HF-03.czi`), while ``DesBTXNEFM`` tiles use Z=13 (~164 MB). Deep Z stacks alone
+    explain why the former can OOM Docker/Streamlit even when XY matches. Streaming Z reduces
+    peak read memory to ~one plane (~13 MB for 2576² uint16) plus the accumulator.
+    """
+    z_rng = dims0.get("Z", (0, 1))
+    z0, z1 = int(z_rng[0]), int(z_rng[1])
+    if z1 - z0 <= 1:
+        img, _ = czi.read_image(C=c_idx)
+        arr = np.squeeze(np.asarray(img))
+        while arr.ndim > 2:
+            arr = np.max(arr, axis=0)
+        return arr.copy() if not arr.flags.owndata else arr
+
+    acc = None
+    for zi in range(z0, z1):
+        img, _ = czi.read_image(C=c_idx, Z=zi)
+        plane = np.squeeze(np.asarray(img))
+        while plane.ndim > 2:
+            plane = np.max(plane, axis=0)
+        if acc is None:
+            acc = plane.copy()
+        else:
+            np.maximum(acc, plane, out=acc)
+        del img
+    return acc
+
+
 # Removed st.cache_data decorator to prevent catastrophic Out-Of-Memory (OOM) accumulation during massive multi-GB dataset runs
-def load_czi_image(path):
-    czi = aicspylibczi.CziFile(path)
-    img, _ = czi.read_image()
-    img_sq = np.squeeze(img)
-    if img_sq.ndim == 4:
-        img_sq = np.max(img_sq, axis=1)
-    if img_sq.ndim < 3:
-        img_sq = np.expand_dims(img_sq, axis=0)
-    # Detect (Y, X, C) layout: last axis small (≤10, typical channel count) and smaller than first
-    if img_sq.ndim == 3 and img_sq.shape[-1] <= 10 and img_sq.shape[-1] < img_sq.shape[0]:
-        img_sq = np.moveaxis(img_sq, -1, 0)
-    return img_sq
+def load_czi_image(path, channel_indices=None):
+    """Load a CZI image as 2D channel arrays.
+
+    When ``channel_indices`` is provided, only the requested channels are read
+    from disk and projected (Z-max). This dramatically reduces peak memory on
+    multi-GB / multi-channel CZIs, which is the dominant driver of the
+    container OOM-kill (exit 137) during ``Run Batch (ALL Folders)``. The
+    legacy 3D ``(C, Y, X)`` array path is kept as a safe fallback for
+    pathological CZI layouts where per-channel reads fail.
+    """
+    czi = None
+    try:
+        czi = aicspylibczi.CziFile(path)
+
+        if channel_indices is not None:
+            wanted = list(dict.fromkeys(int(c) for c in channel_indices))
+            try:
+                dims0 = czi.get_dims_shape()[0]
+                channels = {}
+                for c_idx in wanted:
+                    channels[c_idx] = _czi_channel_zmax_2d(czi, c_idx, dims0)
+                return channels
+            except Exception:
+                # Fall through to the legacy single-shot read on incompatible CZIs.
+                pass
+
+        img, _ = czi.read_image()
+        img_sq = np.squeeze(img)
+        if img_sq.ndim == 4:
+            img_sq = np.max(img_sq, axis=1)
+        if img_sq.ndim < 3:
+            img_sq = np.expand_dims(img_sq, axis=0)
+        # Detect (Y, X, C) layout: last axis small (≤10, typical channel count) and smaller than first
+        if img_sq.ndim == 3 and img_sq.shape[-1] <= 10 and img_sq.shape[-1] < img_sq.shape[0]:
+            img_sq = np.moveaxis(img_sq, -1, 0)
+
+        if channel_indices is not None:
+            wanted = list(dict.fromkeys(int(c) for c in channel_indices))
+            # .copy() detaches each plane so the giant parent volume can be freed.
+            return {c_idx: img_sq[c_idx].copy() for c_idx in wanted}
+        return img_sq
+    finally:
+        if czi is not None and hasattr(czi, "close"):
+            try:
+                czi.close()
+            except Exception:
+                pass
 
 
 def compute_sigma_bounds_px(min_sigma_um, max_sigma_um, pixel_size_um, image_shape):
@@ -243,6 +318,14 @@ def detect_blobs_stable(img_btx_norm, min_diameter_um, max_diameter_um, pixel_si
     if dog_scale != 1.0:
         blobs[:, :2] = blobs[:, :2] / dog_scale
         blobs[:, 2] = blobs[:, 2] / dog_scale
+    # DoG `min_sigma` / `max_sigma` only approximate the UI "diameter" range; the 0.5 px
+    # lower bound in compute_sigma_bounds_px and skimage's discrete scale steps can still
+    # yield small effective radii. Enforce true physical min/max *diameter* (µm) here;
+    # RADIUS in outputs is (column 2) * pixel_size, so diameter_um = 2 * r_px * um/pix.
+    r_um = blobs[:, 2] * pixel_size_safe
+    d_um = 2.0 * r_um
+    ok = (d_um >= float(min_diameter_um)) & (d_um <= float(max_diameter_um))
+    blobs = blobs[ok]
     return blobs, dog_scale, sigma_cap
 
 
@@ -267,7 +350,8 @@ def estimate_auto_threshold(img_btx_norm):
     thr_from_noise = med + (4.0 * robust_sigma)
     thr_from_high = 0.25 * p99
     auto_thr = max(thr_from_noise, thr_from_high)
-    return float(np.clip(auto_thr, 0.005, 0.20))
+    # Upper cap was 0.20; many bright tiles hit that limit and reported identical values.
+    return float(np.clip(auto_thr, 0.005, 0.45))
 
 
 def save_all_folders_summary_png(master_df, out_png, distance_threshold_um):
@@ -490,12 +574,29 @@ if run_current or run_all:
         status.write(f"🔄 **Processing ({i+1}/{len(all_target_czis)}):** `{current_d}/{czi_file}` ...")
         
         try:
-            # Extract channels
-            image_data = load_czi_image(czi_path)
-            img_muscle = image_data[conf['muscle']]
-            img_neuron = image_data[conf['neuron']]
-            img_btx = image_data[conf['btx']]
-            img_btx_raw = img_btx.copy()
+            # Extract channels using selective channel reads. Only the muscle/neuron/BTX
+            # channels are pulled off disk + Z-projected, instead of loading the full
+            # multi-channel volume and keeping it pinned alive via numpy views.
+            channels = load_czi_image(
+                czi_path,
+                channel_indices=[conf['muscle'], conf['neuron'], conf['btx']],
+            )
+            if isinstance(channels, dict):
+                img_muscle = channels[conf['muscle']]
+                img_neuron = channels[conf['neuron']]
+                img_btx = channels[conf['btx']]
+            else:
+                # Defensive fallback: legacy 3D ndarray path.
+                img_muscle = channels[conf['muscle']].copy()
+                img_neuron = channels[conf['neuron']].copy()
+                img_btx = channels[conf['btx']].copy()
+            channels = None
+            image_data = None
+            gc.collect()
+            # Only retain the pre-tophat BTX copy when we are going to render the PNG;
+            # for very large multi-folder runs this single skip can save hundreds of MB
+            # per iteration on top of the locals() bug fix.
+            img_btx_raw = img_btx.copy() if save_pngs else None
 
             # --- Background Subtraction ---
             # Radius is controlled in physical units (um), then converted per file to pixels.
@@ -552,13 +653,20 @@ if run_current or run_all:
             muscle_mask = img_muscle > m_thresh
             neuron_mask = img_neuron > n_thresh
             
-            # Distance Transform (outputs in raw pixels)
-            edt_muscle_px = distance_transform_edt(muscle_mask == 0)
-            edt_neuron_px = distance_transform_edt(neuron_mask == 0)
-            
+            # Distance Transform (outputs in raw pixels). scipy returns float64 by
+            # default; downcasting to float32 halves the resident memory of the four
+            # large EDT arrays per image, which is one of the dominant allocations in
+            # the per-iteration footprint.
+            edt_muscle_px = distance_transform_edt(muscle_mask == 0).astype(np.float32, copy=False)
+            edt_neuron_px = distance_transform_edt(neuron_mask == 0).astype(np.float32, copy=False)
+
             # Convert direct arrays into physical Micrometers using CZI metadata
-            edt_muscle_um = edt_muscle_px * pixel_size
-            edt_neuron_um = edt_neuron_px * pixel_size
+            edt_muscle_um = (edt_muscle_px * np.float32(pixel_size))
+            edt_neuron_um = (edt_neuron_px * np.float32(pixel_size))
+            # The pixel-domain EDTs are no longer needed; drop them now to keep the
+            # working set small for the per-spot loop below.
+            edt_muscle_px = None
+            edt_neuron_px = None
 
             from skimage.measure import regionprops, label
             
@@ -859,16 +967,50 @@ if run_current or run_all:
         except Exception as e:
             st.warning(f"Analysis failed organically on {czi_file}: {e}")
         finally:
-            # Aggressive cleanup helps long ALL-folder runs avoid memory accumulation.
-            for var_name in [
-                "image_data", "img_muscle", "img_neuron", "img_btx", "img_btx_raw",
-                "img_btx_norm", "blobs", "muscle_mask", "neuron_mask",
-                "edt_muscle_px", "edt_neuron_px", "edt_muscle_um", "edt_neuron_um",
-                "spots_data", "df_spots", "df_spots_master", "raw_clean_side_by_side",
-                "composite_rgb", "img_btx_raw_vis", "img_btx_clean_vis", "fig"
-            ]:
-                if var_name in locals():
-                    del locals()[var_name]
+            # CRITICAL: `del locals()[var]` is a no-op in CPython — when Streamlit runs
+            # the script via exec(code, globals, locals) the dict returned by locals() is
+            # a snapshot, so mutating it does not free the real bindings. The previous
+            # implementation therefore leaked every iteration's images and matplotlib
+            # state, causing the container to OOM-kill (exit 137) on multi-folder runs.
+            # Explicitly rebind the heavy per-iteration buffers to None so reference
+            # counts drop before gc.collect() runs.
+            image_data = None
+            channels = None
+            img_muscle = None
+            img_neuron = None
+            img_btx = None
+            img_btx_raw = None
+            img_btx_norm = None
+            blobs = None
+            muscle_mask = None
+            neuron_mask = None
+            edt_muscle_px = None
+            edt_neuron_px = None
+            edt_muscle_um = None
+            edt_neuron_um = None
+            spots_data = None
+            df_spots = None
+            df_spots_master = None
+            raw_clean_side_by_side = None
+            composite_rgb = None
+            img_btx_raw_vis = None
+            img_btx_clean_vis = None
+            btx_clean_vis = None
+            img_m_norm = None
+            img_n_norm = None
+            img_b_norm = None
+            comp_r = None
+            comp_g = None
+            comp_b = None
+            window_btx = None
+            window_neuron = None
+            labeled = None
+            spot_mask = None
+            fig = None
+            axes = None
+            # Defensively close any matplotlib figures still tracked by pyplot; this
+            # plugs leaks if an exception fired mid-figure construction.
+            plt.close('all')
             gc.collect()
             
         progress.progress((i + 1) / len(all_target_czis))
@@ -1139,9 +1281,31 @@ if run_current or run_all:
         st.pyplot(fig)
         fig.savefig(master_png, bbox_inches='tight')
         plt.close(fig)
-        
+        plt.close('all')
+
         st.success(f"Aggregate Dashboard generated: `{master_png}`")
-        
+
+        # Drop the (potentially huge) aggregate DataFrame and any derived helpers so
+        # the script's resident memory shrinks back down before Streamlit re-runs.
+        master_df = None
+        try:
+            del folder_stats_df
+        except NameError:
+            pass
+        try:
+            del per_image
+        except NameError:
+            pass
+        try:
+            del corr_df
+        except NameError:
+            pass
+        try:
+            del odds_df
+        except NameError:
+            pass
+        gc.collect()
+
     if all_file_stats:
         st.subheader("📊 Batch Summary Metrics")
         st.dataframe(pd.DataFrame(all_file_stats))
