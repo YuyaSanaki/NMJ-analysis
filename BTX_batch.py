@@ -786,8 +786,9 @@ if run_current or run_all:
                             # 1. Circularity
                             props = {p.label: p for p in regionprops(labeled)}
                             prop = props[spot_label]
-                            if prop.perimeter > 0:
-                                circ = (4 * np.pi * prop.area) / (prop.perimeter ** 2)
+                            perimeter = getattr(prop, "perimeter_crofton", 0.0)
+                            if perimeter > 0:
+                                circ = (4 * np.pi * prop.area) / (perimeter ** 2)
                             else:
                                 circ = 1.0 # 1 or 2 pixels is basically circular
                                 
