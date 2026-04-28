@@ -322,6 +322,17 @@ def remove_muscle_haze(img, pixel_size_um):
     return np.clip(result, 0.0, None).astype(img.dtype, copy=False)
 
 
+def robust_normalize(img):
+    """
+    Standardize channel intensity to 0-1 using a robust high percentile.
+    This keeps BTX/Muscle/Neuron channels comparable for leakage filtering.
+    """
+    p_high = float(np.percentile(img, 99.9))
+    if p_high <= 0:
+        p_high = 1e-5
+    return np.clip(img.astype(np.float32, copy=False) / p_high, 0.0, 1.0)
+
+
 def detect_blobs_stable(img_btx_norm, min_diameter_um, max_diameter_um, pixel_size_um, threshold):
     """Run DoG in a memory-safe way using diameter thresholds (µm)."""
     # blob_dog scale is sigma; approximate blob radius is sigma*sqrt(2).
@@ -382,23 +393,22 @@ def detect_blobs_stable(img_btx_norm, min_diameter_um, max_diameter_um, pixel_si
 def estimate_auto_threshold(img_btx_norm):
     """
     Robustly estimate a DoG threshold for NMJ BTX signals.
-    Uses median + K*mad_k7_clip014 so sparse dim spots are less affected by bright clusters.
+    Uses median + K*mad_k7_clip014 with a global floor for dim-image stability.
     """
     sample = np.asarray(img_btx_norm, dtype=np.float32)[::4, ::4].ravel()
     if sample.size == 0:
         return 0.05
 
-    # After haze subtraction + clipping, many zeros are background floor. Compute
-    # robust stats on positive pixels so mad_k7_clip014 does not collapse to near-zero.
-    pos = sample[sample > 0]
-    if pos.size == 0:
+    # Ignore near-zero background to avoid threshold collapse on dim/noisy images.
+    pos = sample[sample > 0.005]
+    if pos.size < 50:
         return 0.05
 
     median = float(np.median(pos))
     mad = float(np.median(np.abs(pos - median)))
     std_est = 1.4826 * mad
     auto_thr = median + (7.0 * std_est)
-    return float(np.clip(auto_thr, 0.01, 0.14))
+    return float(np.clip(auto_thr, 0.02, 0.12))
 
 
 def save_all_folders_summary_png(master_df, out_png, distance_threshold_um):
@@ -648,12 +658,11 @@ if run_current or run_all:
             # per iteration on top of the locals() bug fix.
             img_btx_raw = img_btx.copy() if save_pngs else None
 
-            # --- Background Subtraction + Robust Normalization ---
+            # --- Background Subtraction + Cross-Channel Robust Normalization ---
             img_btx = remove_muscle_haze(img_btx, pixel_size)
-            p_high = float(np.percentile(img_btx, 99.9))
-            if p_high <= 0:
-                p_high = 1e-5
-            img_btx_norm = np.clip(img_btx.astype(np.float32, copy=False) / p_high, 0.0, 1.0)
+            img_btx_norm = robust_normalize(img_btx)
+            img_muscle_norm = robust_normalize(img_muscle)
+            img_neuron_norm = robust_normalize(img_neuron)
             threshold_used = estimate_auto_threshold(img_btx_norm) if auto_threshold else float(threshold)
             if auto_threshold:
                 st.caption(f"{czi_file}: Detection threshold used `{threshold_used:.4f}`")
@@ -666,7 +675,7 @@ if run_current or run_all:
             )
             if auto_threshold and blobs is not None and len(blobs) == 0:
                 # One rescue pass for strict auto thresholds on low-contrast images.
-                threshold_retry = max(0.01, float(threshold_used) * 0.8)
+                threshold_retry = max(0.02, float(threshold_used) * 0.8)
                 blobs_retry, dog_scale_retry, sigma_cap_retry = detect_blobs_stable(
                     img_btx_norm=img_btx_norm,
                     min_diameter_um=min_diameter_um,
@@ -696,8 +705,6 @@ if run_current or run_all:
             if len(blobs) == 0:
                 continue # Skip file if absolutely no spots found
 
-            total_spots = len(blobs)
-            
             # Compute Otsu directly on the raw intensity images
             m_thresh = threshold_otsu(img_muscle) * m_thresh_mult
             n_thresh = threshold_otsu(img_neuron) * n_thresh_mult
@@ -734,6 +741,13 @@ if run_current or run_all:
                 # Boundary check
                 y_idx = np.clip(y_idx, 0, edt_muscle_um.shape[0] - 1)
                 x_idx = np.clip(x_idx, 0, edt_muscle_um.shape[1] - 1)
+
+                # Leakage filter in normalized channel space:
+                # reject spots where muscle intensity is too close to BTX intensity.
+                val_b = img_btx_norm[y_idx, x_idx]
+                val_m = img_muscle_norm[y_idx, x_idx]
+                if val_m > (val_b * 0.8):
+                    continue
                 
                 d_m_um = edt_muscle_um[y_idx, x_idx]
                 d_n_um = edt_neuron_um[y_idx, x_idx]
@@ -803,6 +817,9 @@ if run_current or run_all:
                 })
 
             df_spots = pd.DataFrame(spots_data)
+            if df_spots.empty:
+                continue
+            total_spots = len(df_spots)
 
             # Outputs
             nmj_count = df_spots['is_NMJ'].sum()
