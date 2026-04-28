@@ -892,8 +892,9 @@ if run_current or run_all:
             comp_b = np.zeros_like(img_m_norm)
             composite_rgb = np.stack([comp_r, comp_g, comp_b], axis=-1)
 
-            # Plot Proximity Graph & Images in a perfectly balanced 3x3 grid (9 spots!)
-            fig, axes = plt.subplots(3, 3, figsize=(24, 24))
+            # Plot proximity graphs and images in a 4x3 grid.
+            # Added a dedicated "Cleaned BTX only" panel next to the marked BTX view.
+            fig, axes = plt.subplots(4, 3, figsize=(24, 30))
             
             # Row 1: Graphs (Scatter, Size, Circ)
             ax_scatter = axes[0, 0]
@@ -905,10 +906,15 @@ if run_current or run_all:
             ax_intensity_kde = axes[1, 1]
             ax_btx_clean = axes[1, 2]
             
-            # Row 3: Remaining 3 Images
-            ax_btx_marked = axes[2, 0]
-            ax_comp_marked = axes[2, 1]
-            ax_comp_arrows = axes[2, 2]
+            # Row 3: BTX-focused image panels
+            ax_btx_only = axes[2, 0]
+            ax_btx_marked = axes[2, 1]
+            ax_comp_marked = axes[2, 2]
+            
+            # Row 4: Composite summary + spare panels
+            ax_comp_arrows = axes[3, 0]
+            ax_unused_1 = axes[3, 1]
+            ax_unused_2 = axes[3, 2]
             
             
             # Graph 6: Circularity KDE
@@ -981,20 +987,27 @@ if run_current or run_all:
             ax_btx_clean.set_title("6. Raw BTX (L) | Cleaned BTX (R)")
             ax_btx_clean.axis('off')
 
-            # Graph 3: Strictly scaled cleaned BTX overlaid with spots
+            # Graph 3: Strictly scaled cleaned BTX only
+            ax_btx_only.imshow(img_btx_clean_vis, cmap='gray', vmin=0.0, vmax=1.0)
+            ax_btx_only.set_title("7. Cleaned BTX")
+            ax_btx_only.axis('off')
+
+            # Graph 4: Strictly scaled cleaned BTX overlaid with spots
             ax_btx_marked.imshow(img_btx_clean_vis, cmap='gray', vmin=0.0, vmax=1.0)
-            ax_btx_marked.set_title("7. Cleaned BTX + Detected Spots")
+            ax_btx_marked.set_title("8. Cleaned BTX + Detected Spots")
             ax_btx_marked.axis('off')
 
-            # Graph 4: Composite Image + All Spots
+            # Graph 5: Composite Image + All Spots
             ax_comp_marked.imshow(composite_rgb)
-            ax_comp_marked.set_title("8. Composite + All Detected Spots")
+            ax_comp_marked.set_title("9. Composite + All Detected Spots")
             ax_comp_marked.axis('off')
             
-            # Graph 5: Composite Image + NMJ Arrows
+            # Graph 6: Composite Image + NMJ Arrows
             ax_comp_arrows.imshow(composite_rgb)
-            ax_comp_arrows.set_title("9. Composite + Functional NMJs Only")
+            ax_comp_arrows.set_title("10. Composite + Functional NMJs Only")
             ax_comp_arrows.axis('off')
+            ax_unused_1.axis('off')
+            ax_unused_2.axis('off')
             
             # Plot the overlays
             for index, blob in enumerate(blobs):
