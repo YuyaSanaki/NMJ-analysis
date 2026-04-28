@@ -388,11 +388,17 @@ def estimate_auto_threshold(img_btx_norm):
     if sample.size == 0:
         return 0.05
 
-    median = float(np.median(sample))
-    mad = float(np.median(np.abs(sample - median)))
+    # After haze subtraction + clipping, many zeros are background floor. Compute
+    # robust stats on positive pixels so MAD does not collapse to near-zero.
+    pos = sample[sample > 0]
+    if pos.size == 0:
+        return 0.05
+
+    median = float(np.median(pos))
+    mad = float(np.median(np.abs(pos - median)))
     std_est = 1.4826 * mad
     auto_thr = median + (5.0 * std_est)
-    return float(np.clip(auto_thr, 0.008, 0.10))
+    return float(np.clip(auto_thr, 0.01, 0.10))
 
 
 def save_all_folders_summary_png(master_df, out_png, distance_threshold_um):
