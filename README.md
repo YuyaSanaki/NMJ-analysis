@@ -64,7 +64,7 @@ For each spot, localized Otsu and masks support:
 * **`Dist_to_Muscle_um` / `Dist_to_Neuron_um`:** EDT from thresholded muscle and neuron masks; an NMJ “functional” boundary in μm gates NMJ vs non-NMJ.
 * **`INNERVATION_OVERLAP_PCT`:** Overlap of the spot mask with the neuron channel.
 * **`MEAN_INTENSITY`:** Mean raw intensity inside the spot mask.
-* **`CIRCULARITY`:** `4π·area / perimeter²` on the segmented spot region.
+* **`CIRCULARITY`:** `4π·area / perimeter_crofton²` on the segmented spot region.
 
 ---
 

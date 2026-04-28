@@ -1403,4 +1403,3 @@ if run_current or run_all:
     if all_file_stats:
         st.subheader("📊 Batch Summary Metrics")
         st.dataframe(pd.DataFrame(all_file_stats))
-
