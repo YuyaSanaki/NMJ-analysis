@@ -382,14 +382,14 @@ def detect_blobs_stable(img_btx_norm, min_diameter_um, max_diameter_um, pixel_si
 def estimate_auto_threshold(img_btx_norm):
     """
     Robustly estimate a DoG threshold for NMJ BTX signals.
-    Uses median + K*MAD so sparse dim spots are less affected by bright clusters.
+    Uses median + K*mad_k7_clip014 so sparse dim spots are less affected by bright clusters.
     """
     sample = np.asarray(img_btx_norm, dtype=np.float32)[::4, ::4].ravel()
     if sample.size == 0:
         return 0.05
 
     # After haze subtraction + clipping, many zeros are background floor. Compute
-    # robust stats on positive pixels so MAD does not collapse to near-zero.
+    # robust stats on positive pixels so mad_k7_clip014 does not collapse to near-zero.
     pos = sample[sample > 0]
     if pos.size == 0:
         return 0.05
@@ -397,8 +397,8 @@ def estimate_auto_threshold(img_btx_norm):
     median = float(np.median(pos))
     mad = float(np.median(np.abs(pos - median)))
     std_est = 1.4826 * mad
-    auto_thr = median + (5.0 * std_est)
-    return float(np.clip(auto_thr, 0.01, 0.10))
+    auto_thr = median + (7.0 * std_est)
+    return float(np.clip(auto_thr, 0.01, 0.14))
 
 
 def save_all_folders_summary_png(master_df, out_png, distance_threshold_um):
