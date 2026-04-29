@@ -156,17 +156,30 @@ def compute_bg_radius_px(bg_radius_um, pixel_size_um, image_shape):
     return radius_px, clipped, radius_cap
 
 
-def remove_muscle_haze(img, pixel_size_um):
+def remove_muscle_haze(img, pixel_size_um, bg_sigma_um=50.0):
     """
-    Subtract broad BTX background so 3-10 um puncta remain.
-    Uses a fixed 30 um Gaussian sigma as a wide haze model.
+    Subtract broad BTX background so 3–10 µm puncta remain.
+    Larger ``bg_sigma_um`` avoids treating wide BTX plaques as removable haze (donut artifacts).
     """
     pixel_size_safe = max(float(pixel_size_um), 1e-9)
-    bg_sigma_um = 30.0
-    bg_sigma_px = bg_sigma_um / pixel_size_safe
+    bg_sigma_px = float(bg_sigma_um) / pixel_size_safe
     background = gaussian(img, sigma=bg_sigma_px, preserve_range=True)
     result = img.astype(np.float32, copy=False) - background.astype(np.float32, copy=False)
     return np.clip(result, 0.0, None).astype(img.dtype, copy=False)
+
+
+def threshold_raw_for_spot_crop(threshold_used, p_high, window_btx):
+    """Map normalized DoG threshold to haze-subtracted raw units; fall back if degenerate."""
+    th_raw = float(threshold_used) * float(p_high)
+    if window_btx.size == 0:
+        return th_raw
+    wmax = float(np.max(window_btx))
+    if th_raw <= 0 or (wmax > 0 and th_raw >= wmax):
+        try:
+            th_raw = float(threshold_otsu(window_btx))
+        except ValueError:
+            th_raw = wmax * 0.5 if wmax > 0 else 1e-9
+    return th_raw
 
 
 def detect_blobs_stable(img_btx_norm, min_diameter_um, max_diameter_um, pixel_size_um, threshold):
@@ -299,6 +312,14 @@ with col_p1:
     else:
         # Tie auto background radius to detected maximum diameter scale.
         btx_bg_radius_um = float(max_diameter_um)
+    bg_sigma_um = st.number_input(
+        "BTX haze Gaussian σ (μm)",
+        value=float(max(50.0, 4.0 * float(max_diameter_um))),
+        min_value=10.0,
+        max_value=200.0,
+        step=5.0,
+        help="Width of the low-frequency BTX background model. Use ~50 µm or larger for wide plaques; scale with max spot diameter.",
+    )
 
 with col_p2:
     st.markdown("**EDT Thresholds**")
@@ -321,7 +342,7 @@ if st.button("🚀 Process Pipeline", type="primary"):
             img_btx_raw = img_btx.copy()
 
             # --- Background Subtraction + Robust Normalization ---
-            img_btx = remove_muscle_haze(img_btx, pixel_size)
+            img_btx = remove_muscle_haze(img_btx, pixel_size, bg_sigma_um=bg_sigma_um)
             p_high = float(np.percentile(img_btx, 99.9))
             if p_high <= 0:
                 p_high = 1e-5
@@ -406,9 +427,12 @@ if st.button("🚀 Process Pipeline", type="primary"):
                 y_idx = np.clip(y_idx, 0, edt_muscle_um.shape[0] - 1)
                 x_idx = np.clip(x_idx, 0, edt_muscle_um.shape[1] - 1)
                 
-                d_m_um = edt_muscle_um[y_idx, x_idx]
-                d_n_um = edt_neuron_um[y_idx, x_idx]
-                
+                d_m_center = float(edt_muscle_um[y_idx, x_idx])
+                d_n_center = float(edt_neuron_um[y_idx, x_idx])
+                r_um = float(r * pixel_size)
+                d_m_um = max(0.0, d_m_center - r_um)
+                d_n_um = max(0.0, d_n_center - r_um)
+
                 distances_m.append(d_m_um)
                 distances_n.append(d_n_um)
                 
@@ -428,7 +452,7 @@ if st.button("🚀 Process Pipeline", type="primary"):
                 
                 if window_btx.size >= 4:
                     try:
-                        th = threshold_otsu(window_btx)
+                        th = threshold_raw_for_spot_crop(threshold_used, p_high, window_btx)
                         labeled = label(window_btx > th)
                         center_y, center_x = y_idx - box_y1, x_idx - box_x1
                         spot_label = labeled[center_y, center_x]
@@ -477,6 +501,8 @@ if st.button("🚀 Process Pipeline", type="primary"):
                     "INNERVATION_OVERLAP_PCT": overlap_ratio,
                     "Dist_to_Muscle_um": d_m_um,
                     "Dist_to_Neuron_um": d_n_um,
+                    "Dist_to_Muscle_center_um": d_m_center,
+                    "Dist_to_Neuron_center_um": d_n_center,
                     "DETECTION_THRESHOLD_USED": threshold_used,
                     "is_NMJ": (d_m_um <= distance_threshold_um) and (d_n_um <= distance_threshold_um)
                 })
@@ -639,8 +665,8 @@ if st.button("🚀 Process Pipeline", type="primary"):
             
             sig_star = "***" if fisher_p < 0.001 else "**" if fisher_p < 0.01 else "*" if fisher_p < 0.05 else "ns"
             ax_scatter.set_title(f'1. NMJ Proximity Analysis (Fisher P = {fisher_p:.4f} {sig_star})')
-            ax_scatter.set_xlabel('Distance to Muscle (μm)')
-            ax_scatter.set_ylabel('Distance to Neuron (μm)')
+            ax_scatter.set_xlabel('Distance to Muscle — spot edge (μm)')
+            ax_scatter.set_ylabel('Distance to Neuron — spot edge (μm)')
 
             # Graph 2: Raw and cleaned BTX shown side-by-side for subtraction verification
             ax_btx_clean.imshow(raw_clean_side_by_side, cmap='gray', vmin=0.0, vmax=1.0)

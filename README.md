@@ -59,12 +59,17 @@ On large spot-diameter settings, the code may downscale for DoG stability and ma
 
 ### 3. Biological and spatial metrics
 
-For each spot, localized Otsu and masks support:
+For each spot, segmentation uses a **fixed threshold tied to DoG detection** (normalized threshold × 99.9th percentile of haze-subtracted BTX), with Otsu only as a fallback on degenerate crops—this avoids splitting dim spot rims on black-dominated windows.
 
-* **`Dist_to_Muscle_um` / `Dist_to_Neuron_um`:** EDT from thresholded muscle and neuron masks; an NMJ “functional” boundary in μm gates NMJ vs non-NMJ.
+* **`Dist_to_Muscle_um` / `Dist_to_Neuron_um`:** Edge-corrected EDT: center-to-mask distance minus spot radius (µm), clamped at 0. Used for NMJ gating and Fisher-style proximity summaries.
+* **`Dist_to_Muscle_center_um` / `Dist_to_Neuron_center_um`:** EDT at the blob center only (µm), for comparison and QC.
 * **`INNERVATION_OVERLAP_PCT`:** Overlap of the spot mask with the neuron channel.
-* **`MEAN_INTENSITY`:** Mean raw intensity inside the spot mask.
+* **`MEAN_INTENSITY`:** Mean raw intensity inside the spot mask (haze-subtracted BTX).
 * **`CIRCULARITY`:** `4π·area / perimeter_crofton²` on the segmented spot region.
+
+**Muscle haze removal:** subtracts a wide Gaussian from the BTX channel; σ in µm is configurable in the UI (default scales with max spot size, typically ≥50 µm) so large plaques are not hollowed out.
+
+**Batch-only leakage filter:** spots can be rejected when raw muscle at the blob center exceeds a configurable multiple of raw haze-subtracted BTX (default ×1.2), avoiding per-channel 0–1 normalization artifacts.
 
 ---
 

@@ -309,28 +309,30 @@ def compute_bg_radius_px(bg_radius_um, pixel_size_um, image_shape):
     return radius_px, clipped, radius_cap
 
 
-def remove_muscle_haze(img, pixel_size_um):
+def remove_muscle_haze(img, pixel_size_um, bg_sigma_um=50.0):
     """
-    Subtract broad BTX background so 3-10 um puncta remain.
-    Uses a fixed 30 um Gaussian sigma as a wide haze model.
+    Subtract broad BTX background so 3–10 µm puncta remain.
+    Larger ``bg_sigma_um`` avoids treating wide BTX plaques as removable haze (donut artifacts).
     """
     pixel_size_safe = max(float(pixel_size_um), 1e-9)
-    bg_sigma_um = 30.0
-    bg_sigma_px = bg_sigma_um / pixel_size_safe
+    bg_sigma_px = float(bg_sigma_um) / pixel_size_safe
     background = gaussian(img, sigma=bg_sigma_px, preserve_range=True)
     result = img.astype(np.float32, copy=False) - background.astype(np.float32, copy=False)
     return np.clip(result, 0.0, None).astype(img.dtype, copy=False)
 
 
-def robust_normalize(img):
-    """
-    Standardize channel intensity to 0-1 using a robust high percentile.
-    This keeps BTX/Muscle/Neuron channels comparable for leakage filtering.
-    """
-    p_high = float(np.percentile(img, 99.9))
-    if p_high <= 0:
-        p_high = 1e-5
-    return np.clip(img.astype(np.float32, copy=False) / p_high, 0.0, 1.0)
+def threshold_raw_for_spot_crop(threshold_used, p_high, window_btx):
+    """Map normalized DoG threshold to haze-subtracted raw units; fall back if degenerate."""
+    th_raw = float(threshold_used) * float(p_high)
+    if window_btx.size == 0:
+        return th_raw
+    wmax = float(np.max(window_btx))
+    if th_raw <= 0 or (wmax > 0 and th_raw >= wmax):
+        try:
+            th_raw = float(threshold_otsu(window_btx))
+        except ValueError:
+            th_raw = wmax * 0.5 if wmax > 0 else 1e-9
+    return th_raw
 
 
 def detect_blobs_stable(img_btx_norm, min_diameter_um, max_diameter_um, pixel_size_um, threshold):
@@ -506,8 +508,8 @@ def save_all_folders_summary_png(master_df, out_png, distance_threshold_um):
     ax_proximity.axhline(y=distance_threshold_um, color="black", linestyle="--")
     sig_star = "***" if global_fisher_p < 0.001 else "**" if global_fisher_p < 0.01 else "*" if global_fisher_p < 0.05 else "ns"
     ax_proximity.set_title(f"6. All-Folders Proximity (Fisher P = {global_fisher_p:.4g} {sig_star})")
-    ax_proximity.set_xlabel("Distance to Muscle (um)")
-    ax_proximity.set_ylabel("Distance to Neuron (um)")
+    ax_proximity.set_xlabel("Distance to Muscle — spot edge (um)")
+    ax_proximity.set_ylabel("Distance to Neuron — spot edge (um)")
 
     plt.tight_layout()
     fig.savefig(out_png, bbox_inches="tight")
@@ -538,6 +540,14 @@ with col_p1:
     else:
         # Tie auto background radius to detected maximum diameter scale.
         btx_bg_radius_um = float(max_diameter_um)
+    bg_sigma_um = st.number_input(
+        "BTX haze Gaussian σ (μm)",
+        value=float(max(50.0, 4.0 * float(max_diameter_um))),
+        min_value=10.0,
+        max_value=200.0,
+        step=5.0,
+        help="Width of the low-frequency BTX background model. Use ~50 µm or larger for wide plaques; scale with max spot diameter.",
+    )
 
 with col_p2:
     st.markdown("**EDT Thresholds**")
@@ -548,6 +558,14 @@ with col_p2:
 with col_p3:
     st.markdown("**NMJ Logic**")
     distance_threshold_um = st.number_input("Functional NMJ Boundary (μm)", value=1.0, step=0.1)
+    leakage_ratio = st.slider(
+        "Muscle/BTX leakage filter (raw)",
+        min_value=0.8,
+        max_value=2.5,
+        value=1.2,
+        step=0.05,
+        help="Reject spots where raw muscle ≥ this × raw BTX (haze-subtracted) at blob center. Higher = more lenient.",
+    )
 
 # --- 4. Run Batch Pipeline ---
 col_run1, col_run2 = st.columns(2)
@@ -661,11 +679,12 @@ if run_current or run_all:
             # per iteration on top of the locals() bug fix.
             img_btx_raw = img_btx.copy() if save_pngs else None
 
-            # --- Background Subtraction + Cross-Channel Robust Normalization ---
-            img_btx = remove_muscle_haze(img_btx, pixel_size)
-            img_btx_norm = robust_normalize(img_btx)
-            img_muscle_norm = robust_normalize(img_muscle)
-            img_neuron_norm = robust_normalize(img_neuron)
+            # --- Background subtraction + BTX normalization (single shared p_high for DoG and spot crops) ---
+            img_btx = remove_muscle_haze(img_btx, pixel_size, bg_sigma_um=bg_sigma_um)
+            p_high = float(np.percentile(img_btx, 99.9))
+            if p_high <= 0:
+                p_high = 1e-5
+            img_btx_norm = np.clip(img_btx.astype(np.float32, copy=False) / p_high, 0.0, 1.0)
             threshold_used = estimate_auto_threshold(img_btx_norm) if auto_threshold else float(threshold)
             if auto_threshold:
                 st.caption(f"{czi_file}: Detection threshold used `{threshold_used:.4f}`")
@@ -745,16 +764,19 @@ if run_current or run_all:
                 y_idx = np.clip(y_idx, 0, edt_muscle_um.shape[0] - 1)
                 x_idx = np.clip(x_idx, 0, edt_muscle_um.shape[1] - 1)
 
-                # Leakage filter in normalized channel space:
-                # reject spots where muscle intensity is too close to BTX intensity.
-                val_b = img_btx_norm[y_idx, x_idx]
-                val_m = img_muscle_norm[y_idx, x_idx]
-                if val_m > (val_b * 0.8):
+                # Leakage filter (raw intensities): reject likely muscle-channel bleed-through.
+                val_b_raw = float(img_btx[y_idx, x_idx])
+                val_m_raw = float(img_muscle[y_idx, x_idx])
+                eps_b = max(val_b_raw, 1e-9)
+                if val_m_raw > (eps_b * float(leakage_ratio)):
                     continue
-                
-                d_m_um = edt_muscle_um[y_idx, x_idx]
-                d_n_um = edt_neuron_um[y_idx, x_idx]
-                
+
+                d_m_center = float(edt_muscle_um[y_idx, x_idx])
+                d_n_center = float(edt_neuron_um[y_idx, x_idx])
+                r_um = float(r * pixel_size)
+                d_m_um = max(0.0, d_m_center - r_um)
+                d_n_um = max(0.0, d_n_center - r_um)
+
                 distances_m.append(d_m_um)
                 distances_n.append(d_n_um)
                 
@@ -774,7 +796,7 @@ if run_current or run_all:
                 
                 if window_btx.size >= 4:
                     try:
-                        th = threshold_otsu(window_btx)
+                        th = threshold_raw_for_spot_crop(threshold_used, p_high, window_btx)
                         labeled = label(window_btx > th)
                         center_y, center_x = y_idx - box_y1, x_idx - box_x1
                         spot_label = labeled[center_y, center_x]
@@ -823,6 +845,8 @@ if run_current or run_all:
                     "INNERVATION_OVERLAP_PCT": overlap_ratio,
                     "Dist_to_Muscle_um": d_m_um,
                     "Dist_to_Neuron_um": d_n_um,
+                    "Dist_to_Muscle_center_um": d_m_center,
+                    "Dist_to_Neuron_center_um": d_n_center,
                     "DETECTION_THRESHOLD_USED": threshold_used,
                     "is_NMJ": (d_m_um <= distance_threshold_um) and (d_n_um <= distance_threshold_um)
                 })
@@ -1008,8 +1032,8 @@ if run_current or run_all:
             
             sig_star = "***" if fisher_p < 0.001 else "**" if fisher_p < 0.01 else "*" if fisher_p < 0.05 else "ns"
             ax_scatter.set_title(f'1. NMJ Proximity Analysis (Fisher P = {fisher_p:.4f} {sig_star})')
-            ax_scatter.set_xlabel('Distance to Muscle (μm)')
-            ax_scatter.set_ylabel('Distance to Neuron (μm)')
+            ax_scatter.set_xlabel('Distance to Muscle — spot edge (μm)')
+            ax_scatter.set_ylabel('Distance to Neuron — spot edge (μm)')
 
             # Graph 2: Raw and cleaned BTX shown side-by-side for subtraction verification
             ax_btx_clean.imshow(raw_clean_side_by_side, cmap='gray', vmin=0.0, vmax=1.0)
@@ -1181,8 +1205,8 @@ if run_current or run_all:
 
         sig_star = "***" if global_fisher_p < 0.001 else "**" if global_fisher_p < 0.01 else "*" if global_fisher_p < 0.05 else "ns"
         ax_scatter.set_title(f'1. Global NMJ Proximity Analysis (Fisher P = {global_fisher_p:.4g} {sig_star})')
-        ax_scatter.set_xlabel('Distance to Muscle (μm)')
-        ax_scatter.set_ylabel('Distance to Neuron (μm)')
+        ax_scatter.set_xlabel('Distance to Muscle — spot edge (μm)')
+        ax_scatter.set_ylabel('Distance to Neuron — spot edge (μm)')
 
         # 2. NMJ Size KDE
         if len(master_df) > 0:
