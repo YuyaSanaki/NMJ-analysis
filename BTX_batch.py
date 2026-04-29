@@ -392,23 +392,26 @@ def detect_blobs_stable(img_btx_norm, min_diameter_um, max_diameter_um, pixel_si
 
 def estimate_auto_threshold(img_btx_norm):
     """
-    Robustly estimate a DoG threshold for NMJ BTX signals.
-    Uses median + K*mad_k7_clip014 with a global floor for dim-image stability.
+    Stabilized thresholding.
+    Uses the Median of the positive signals to ensure we stay above the noise floor
+    while still being sensitive to varied intensities.
     """
     sample = np.asarray(img_btx_norm, dtype=np.float32)[::4, ::4].ravel()
-    if sample.size == 0:
-        return 0.05
+    # Increase floor from 0.01 to 0.02 to ignore very faint noise immediately
+    pos = sample[sample > 0.02]
 
-    # Ignore near-zero background to avoid threshold collapse on dim/noisy images.
-    pos = sample[sample > 0.005]
     if pos.size < 50:
-        return 0.05
+        return 0.05  # Standard fallback
 
-    median = float(np.median(pos))
-    mad = float(np.median(np.abs(pos - median)))
-    std_est = 1.4826 * mad
-    auto_thr = median + (7.0 * std_est)
-    return float(np.clip(auto_thr, 0.02, 0.12))
+    # Instead of the 10th percentile (which was too low/sensitive),
+    # let's use the Median (50th percentile) and take a fraction of it.
+    # This is a 'Top-Half' logic: It looks at the average brightness of
+    # visible spots and sets the threshold at 40% of that value.
+    signal_median = float(np.median(pos))
+    auto_thr = signal_median * 0.4
+
+    # Clip between 0.03 (loose) and 0.08 (strict)
+    return float(np.clip(auto_thr, 0.03, 0.08))
 
 
 def save_all_folders_summary_png(master_df, out_png, distance_threshold_um):
