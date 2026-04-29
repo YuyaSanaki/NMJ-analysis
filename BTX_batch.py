@@ -781,24 +781,31 @@ if run_current or run_all:
                             spot_label = labeled[np.unravel_index(np.argmax(window_btx), window_btx.shape)]
                             
                         if spot_label > 0:
-                            spot_mask = (labeled == spot_label)
-                            
-                            # 1. Circularity
-                            props = {p.label: p for p in regionprops(labeled)}
-                            prop = props[spot_label]
-                            perimeter = getattr(prop, "perimeter_crofton", 0.0)
-                            if perimeter > 0:
-                                circ = (4 * np.pi * prop.area) / (perimeter ** 2)
+                            props_list = regionprops(labeled)
+                            props_dict = {p.label: p for p in props_list}
+                            if spot_label in props_dict:
+                                prop = props_dict[spot_label]
+                            elif props_list:
+                                prop = max(props_list, key=lambda x: x.area)
+                                spot_label = prop.label
                             else:
-                                circ = 1.0 # 1 or 2 pixels is basically circular
-                                
-                            # 2. Mean Fluorescence Intensity
-                            mean_intensity = float(np.mean(window_btx[spot_mask]))
-                            
-                            # 3. Innervation/Colocalization (Overlap %)
-                            overlap_pixels = np.sum(spot_mask & window_neuron)
-                            if prop.area > 0:
-                                overlap_ratio = float(overlap_pixels / prop.area) * 100.0
+                                prop = None
+                            if prop is not None:
+                                spot_mask = (labeled == spot_label)
+                                # 1. Circularity
+                                perimeter = getattr(prop, "perimeter_crofton", 0.0)
+                                if perimeter > 0:
+                                    circ = (4 * np.pi * prop.area) / (perimeter ** 2)
+                                else:
+                                    circ = 1.0  # 1 or 2 pixels is basically circular
+
+                                # 2. Mean Fluorescence Intensity
+                                mean_intensity = float(np.mean(window_btx[spot_mask]))
+
+                                # 3. Innervation/Colocalization (Overlap %)
+                                overlap_pixels = np.sum(spot_mask & window_neuron)
+                                if prop.area > 0:
+                                    overlap_ratio = float(overlap_pixels / prop.area) * 100.0
 
                     except Exception:
                         pass # if crop is fully uniform or algo fails
@@ -941,7 +948,8 @@ if run_current or run_all:
                     data=df_spots, x='CIRCULARITY', hue='BTX signal class',
                     hue_order=BTX_SIGNAL_CLASS_ORDER,
                     palette=BTX_SIGNAL_CLASS_PALETTE, ax=ax_circ_kde,
-                    common_norm=False, fill=True, clip=(0, 1)
+                    common_norm=False, fill=True, clip=(0, 1),
+                    warn_singular=False,
                 )
             ax_circ_kde.set_title('3. NMJ Circularity KDE')
             ax_circ_kde.set_xlabel('Circularity (1 = Perfect Circle)')
@@ -954,7 +962,8 @@ if run_current or run_all:
                     data=df_spots, x='RADIUS', hue='BTX signal class',
                     hue_order=BTX_SIGNAL_CLASS_ORDER,
                     palette=BTX_SIGNAL_CLASS_PALETTE, ax=ax_size_kde,
-                    common_norm=False, fill=True
+                    common_norm=False, fill=True,
+                    warn_singular=False,
                 )
             ax_size_kde.set_title('2. NMJ Size KDE')
             ax_size_kde.set_xlabel('Radius (μm)')
@@ -978,7 +987,8 @@ if run_current or run_all:
                     data=df_spots, x='MEAN_INTENSITY', hue='BTX signal class',
                     hue_order=BTX_SIGNAL_CLASS_ORDER,
                     palette=BTX_SIGNAL_CLASS_PALETTE, ax=ax_intensity_kde,
-                    common_norm=False, fill=True
+                    common_norm=False, fill=True,
+                    warn_singular=False,
                 )
             ax_intensity_kde.set_title('5. Receptor Intensity KDE')
             ax_intensity_kde.set_xlabel('Mean Fluorescence Intensity')
@@ -1027,6 +1037,7 @@ if run_current or run_all:
             ax_unused_1.axis('off')
             ax_unused_2.axis('off')
             
+            by_spot_id = df_spots.set_index("SPOT_ID")
             # Plot the overlays
             for index, blob in enumerate(blobs):
                 y, x, r = blob
@@ -1036,7 +1047,7 @@ if run_current or run_all:
                 ax_comp_marked.add_patch(c2)
                 
                 # If this spot is functionally classified as an NMJ, point an arrow at it on the final layout
-                if df_spots.loc[index, 'is_NMJ']:
+                if index in by_spot_id.index and bool(by_spot_id.at[index, "is_NMJ"]):
                     # The arrow points to the very edge of the radius (x+r, y-r) so it doesn't cover the spot itself.
                     target_x = x + r + 2
                     target_y = y - r - 2
@@ -1176,7 +1187,8 @@ if run_current or run_all:
                 data=master_df, x='RADIUS', hue='BTX signal class',
                 hue_order=BTX_SIGNAL_CLASS_ORDER,
                 palette=BTX_SIGNAL_CLASS_PALETTE, ax=ax_size_kde,
-                common_norm=False, fill=True
+                common_norm=False, fill=True,
+                warn_singular=False,
             )
         ax_size_kde.set_title('2. Global NMJ Size KDE')
         ax_size_kde.set_xlabel('Radius (μm)')
@@ -1188,7 +1200,8 @@ if run_current or run_all:
                 data=master_df, x='CIRCULARITY', hue='BTX signal class',
                 hue_order=BTX_SIGNAL_CLASS_ORDER,
                 palette=BTX_SIGNAL_CLASS_PALETTE, ax=ax_circ_kde,
-                common_norm=False, fill=True, clip=(0, 1)
+                common_norm=False, fill=True, clip=(0, 1),
+                warn_singular=False,
             )
         ax_circ_kde.set_title('3. Global NMJ Circularity KDE')
         ax_circ_kde.set_xlabel('Circularity (1 = Perfect Circle)')
@@ -1213,7 +1226,8 @@ if run_current or run_all:
                 data=master_df, x='MEAN_INTENSITY', hue='BTX signal class',
                 hue_order=BTX_SIGNAL_CLASS_ORDER,
                 palette=BTX_SIGNAL_CLASS_PALETTE, ax=ax_intensity_kde,
-                common_norm=False, fill=True
+                common_norm=False, fill=True,
+                warn_singular=False,
             )
         ax_intensity_kde.set_title('5. Global Receptor Intensity KDE')
         ax_intensity_kde.set_xlabel('Mean Fluorescence Intensity')

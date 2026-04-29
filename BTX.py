@@ -436,24 +436,31 @@ if st.button("🚀 Process Pipeline", type="primary"):
                             spot_label = labeled[np.unravel_index(np.argmax(window_btx), window_btx.shape)]
                             
                         if spot_label > 0:
-                            spot_mask = (labeled == spot_label)
-                            
-                            # 1. Circularity
-                            props = {p.label: p for p in regionprops(labeled)}
-                            prop = props[spot_label]
-                            perimeter = getattr(prop, "perimeter_crofton", 0.0)
-                            if perimeter > 0:
-                                circ = (4 * np.pi * prop.area) / (perimeter ** 2)
+                            props_list = regionprops(labeled)
+                            props_dict = {p.label: p for p in props_list}
+                            if spot_label in props_dict:
+                                prop = props_dict[spot_label]
+                            elif props_list:
+                                prop = max(props_list, key=lambda x: x.area)
+                                spot_label = prop.label
                             else:
-                                circ = 1.0 # 1 or 2 pixels is basically circular
-                                
-                            # 2. Mean Fluorescence Intensity
-                            mean_intensity = float(np.mean(window_btx[spot_mask]))
-                            
-                            # 3. Innervation/Colocalization (Overlap %)
-                            overlap_pixels = np.sum(spot_mask & window_neuron)
-                            if prop.area > 0:
-                                overlap_ratio = float(overlap_pixels / prop.area) * 100.0
+                                prop = None
+                            if prop is not None:
+                                spot_mask = (labeled == spot_label)
+                                # 1. Circularity
+                                perimeter = getattr(prop, "perimeter_crofton", 0.0)
+                                if perimeter > 0:
+                                    circ = (4 * np.pi * prop.area) / (perimeter ** 2)
+                                else:
+                                    circ = 1.0  # 1 or 2 pixels is basically circular
+
+                                # 2. Mean Fluorescence Intensity
+                                mean_intensity = float(np.mean(window_btx[spot_mask]))
+
+                                # 3. Innervation/Colocalization (Overlap %)
+                                overlap_pixels = np.sum(spot_mask & window_neuron)
+                                if prop.area > 0:
+                                    overlap_ratio = float(overlap_pixels / prop.area) * 100.0
 
                     except Exception:
                         pass # if crop is fully uniform or algo fails
