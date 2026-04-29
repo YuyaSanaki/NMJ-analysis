@@ -156,12 +156,15 @@ def compute_bg_radius_px(bg_radius_um, pixel_size_um, image_shape):
     return radius_px, clipped, radius_cap
 
 
-def remove_muscle_haze(img, pixel_size_um, bg_sigma_um=50.0):
+def remove_muscle_haze(img, pixel_size_um, max_spot_diameter_um=12.0):
     """
-    Subtract broad BTX background so 3–10 µm puncta remain.
-    Larger ``bg_sigma_um`` avoids treating wide BTX plaques as removable haze (donut artifacts).
+    Subtract broad BTX background so puncta remain while wide plaques are not hollowed out.
+
+    Gaussian σ (µm) is ``max(50, 5 × max_spot_diameter_um)`` so the haze scale stays well
+    above the largest expected cluster and reduces donut artifacts on big BTX regions.
     """
     pixel_size_safe = max(float(pixel_size_um), 1e-9)
+    bg_sigma_um = max(50.0, float(max_spot_diameter_um) * 5.0)
     bg_sigma_px = float(bg_sigma_um) / pixel_size_safe
     background = gaussian(img, sigma=bg_sigma_px, preserve_range=True)
     result = img.astype(np.float32, copy=False) - background.astype(np.float32, copy=False)
@@ -294,8 +297,8 @@ col_p1, col_p2, col_p3 = st.columns(3)
 
 with col_p1:
     st.markdown("**DoG Tunning (BTX)**")
-    min_diameter_um = st.number_input("Min Spot Diameter (μm)", value=3.00, step=0.10)
-    max_diameter_um = st.number_input("Max Spot Diameter (μm)", value=10.00, step=0.10)
+    min_diameter_um = st.number_input("Min Spot Diameter (μm)", value=5.00, step=0.10)
+    max_diameter_um = st.number_input("Max Spot Diameter (μm)", value=12.00, step=0.10)
     if max_diameter_um <= min_diameter_um:
         st.error("Max Spot Diameter must be larger than Min Spot Diameter.")
         st.stop()
@@ -312,14 +315,6 @@ with col_p1:
     else:
         # Tie auto background radius to detected maximum diameter scale.
         btx_bg_radius_um = float(max_diameter_um)
-    bg_sigma_um = st.number_input(
-        "BTX haze Gaussian σ (μm)",
-        value=float(max(50.0, 4.0 * float(max_diameter_um))),
-        min_value=10.0,
-        max_value=200.0,
-        step=5.0,
-        help="Width of the low-frequency BTX background model. Use ~50 µm or larger for wide plaques; scale with max spot diameter.",
-    )
 
 with col_p2:
     st.markdown("**EDT Thresholds**")
@@ -342,7 +337,7 @@ if st.button("🚀 Process Pipeline", type="primary"):
             img_btx_raw = img_btx.copy()
 
             # --- Background Subtraction + Robust Normalization ---
-            img_btx = remove_muscle_haze(img_btx, pixel_size, bg_sigma_um=bg_sigma_um)
+            img_btx = remove_muscle_haze(img_btx, pixel_size, max_spot_diameter_um=max_diameter_um)
             p_high = float(np.percentile(img_btx, 99.9))
             if p_high <= 0:
                 p_high = 1e-5

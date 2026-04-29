@@ -67,9 +67,9 @@ For each spot, segmentation uses a **fixed threshold tied to DoG detection** (no
 * **`MEAN_INTENSITY`:** Mean raw intensity inside the spot mask (haze-subtracted BTX).
 * **`CIRCULARITY`:** `4π·area / perimeter_crofton²` on the segmented spot region.
 
-**Muscle haze removal:** subtracts a wide Gaussian from the BTX channel; σ in µm is configurable in the UI (default scales with max spot size, typically ≥50 µm) so large plaques are not hollowed out.
+**Muscle haze removal:** subtracts a wide Gaussian from the BTX channel. The haze σ (µm) is **max(50, 5 × max spot diameter)** from the DoG UI so large plaques are less likely to show a “donut” after subtraction (not a separate control).
 
-**Batch-only leakage filter:** spots can be rejected when raw muscle at the blob center exceeds a configurable multiple of raw haze-subtracted BTX (default ×1.2), avoiding per-channel 0–1 normalization artifacts.
+Batch outputs use every DoG detection that passes diameter filtering—there is **no** muscle-vs-BTX intensity rejection step.
 
 ---
 

@@ -309,12 +309,15 @@ def compute_bg_radius_px(bg_radius_um, pixel_size_um, image_shape):
     return radius_px, clipped, radius_cap
 
 
-def remove_muscle_haze(img, pixel_size_um, bg_sigma_um=50.0):
+def remove_muscle_haze(img, pixel_size_um, max_spot_diameter_um=12.0):
     """
-    Subtract broad BTX background so 3–10 µm puncta remain.
-    Larger ``bg_sigma_um`` avoids treating wide BTX plaques as removable haze (donut artifacts).
+    Subtract broad BTX background so puncta remain while wide plaques are not hollowed out.
+
+    Gaussian σ (µm) is ``max(50, 5 × max_spot_diameter_um)`` so the haze scale stays well
+    above the largest expected cluster and reduces donut artifacts on big BTX regions.
     """
     pixel_size_safe = max(float(pixel_size_um), 1e-9)
+    bg_sigma_um = max(50.0, float(max_spot_diameter_um) * 5.0)
     bg_sigma_px = float(bg_sigma_um) / pixel_size_safe
     background = gaussian(img, sigma=bg_sigma_px, preserve_range=True)
     result = img.astype(np.float32, copy=False) - background.astype(np.float32, copy=False)
@@ -522,8 +525,8 @@ col_p1, col_p2, col_p3 = st.columns(3)
 
 with col_p1:
     st.markdown("**DoG Tunning (BTX)**")
-    min_diameter_um = st.number_input("Min Spot Diameter (μm)", value=3.00, step=0.10)
-    max_diameter_um = st.number_input("Max Spot Diameter (μm)", value=10.00, step=0.10)
+    min_diameter_um = st.number_input("Min Spot Diameter (μm)", value=5.00, step=0.10)
+    max_diameter_um = st.number_input("Max Spot Diameter (μm)", value=12.00, step=0.10)
     if max_diameter_um <= min_diameter_um:
         st.error("Max Spot Diameter must be larger than Min Spot Diameter.")
         st.stop()
@@ -540,14 +543,6 @@ with col_p1:
     else:
         # Tie auto background radius to detected maximum diameter scale.
         btx_bg_radius_um = float(max_diameter_um)
-    bg_sigma_um = st.number_input(
-        "BTX haze Gaussian σ (μm)",
-        value=float(max(50.0, 4.0 * float(max_diameter_um))),
-        min_value=10.0,
-        max_value=200.0,
-        step=5.0,
-        help="Width of the low-frequency BTX background model. Use ~50 µm or larger for wide plaques; scale with max spot diameter.",
-    )
 
 with col_p2:
     st.markdown("**EDT Thresholds**")
@@ -558,14 +553,6 @@ with col_p2:
 with col_p3:
     st.markdown("**NMJ Logic**")
     distance_threshold_um = st.number_input("Functional NMJ Boundary (μm)", value=1.0, step=0.1)
-    leakage_ratio = st.slider(
-        "Muscle/BTX leakage filter (raw)",
-        min_value=0.8,
-        max_value=2.5,
-        value=1.2,
-        step=0.05,
-        help="Reject spots where raw muscle ≥ this × raw BTX (haze-subtracted) at blob center. Higher = more lenient.",
-    )
 
 # --- 4. Run Batch Pipeline ---
 col_run1, col_run2 = st.columns(2)
@@ -680,7 +667,7 @@ if run_current or run_all:
             img_btx_raw = img_btx.copy() if save_pngs else None
 
             # --- Background subtraction + BTX normalization (single shared p_high for DoG and spot crops) ---
-            img_btx = remove_muscle_haze(img_btx, pixel_size, bg_sigma_um=bg_sigma_um)
+            img_btx = remove_muscle_haze(img_btx, pixel_size, max_spot_diameter_um=max_diameter_um)
             p_high = float(np.percentile(img_btx, 99.9))
             if p_high <= 0:
                 p_high = 1e-5
@@ -764,13 +751,6 @@ if run_current or run_all:
                 y_idx = np.clip(y_idx, 0, edt_muscle_um.shape[0] - 1)
                 x_idx = np.clip(x_idx, 0, edt_muscle_um.shape[1] - 1)
 
-                # Leakage filter (raw intensities): reject likely muscle-channel bleed-through.
-                val_b_raw = float(img_btx[y_idx, x_idx])
-                val_m_raw = float(img_muscle[y_idx, x_idx])
-                eps_b = max(val_b_raw, 1e-9)
-                if val_m_raw > (eps_b * float(leakage_ratio)):
-                    continue
-
                 d_m_center = float(edt_muscle_um[y_idx, x_idx])
                 d_n_center = float(edt_neuron_um[y_idx, x_idx])
                 r_um = float(r * pixel_size)
@@ -848,63 +828,82 @@ if run_current or run_all:
                     "Dist_to_Muscle_center_um": d_m_center,
                     "Dist_to_Neuron_center_um": d_n_center,
                     "DETECTION_THRESHOLD_USED": threshold_used,
-                    "is_NMJ": (d_m_um <= distance_threshold_um) and (d_n_um <= distance_threshold_um)
+                    "is_NMJ": (d_m_um <= distance_threshold_um) and (d_n_um <= distance_threshold_um),
                 })
 
             df_spots = pd.DataFrame(spots_data)
             if df_spots.empty:
                 continue
+
+            def classify_quadrant(row):
+                if row["Dist_to_Muscle_um"] <= distance_threshold_um and row["Dist_to_Neuron_um"] <= distance_threshold_um:
+                    return "NMJ"
+                elif row["Dist_to_Muscle_um"] <= distance_threshold_um:
+                    return "Aneural AChR clusters"
+                elif row["Dist_to_Neuron_um"] <= distance_threshold_um:
+                    return "Neuron-associated BTX signal"
+                else:
+                    return "Orphaned"
+
+            df_spots["BTX signal class"] = df_spots.apply(classify_quadrant, axis=1)
+            df_spots = normalize_btx_signal_classes(df_spots)
+
             total_spots = len(df_spots)
 
             # Outputs
-            nmj_count = df_spots['is_NMJ'].sum()
+            nmj_count = df_spots["is_NMJ"].sum()
             formation_rate = nmj_count / total_spots * 100
-            
-            near_m_only = len(df_spots[(df_spots['Dist_to_Muscle_um'] <= distance_threshold_um) & (df_spots['Dist_to_Neuron_um'] > distance_threshold_um)])
-            near_n_only = len(df_spots[(df_spots['Dist_to_Neuron_um'] <= distance_threshold_um) & (df_spots['Dist_to_Muscle_um'] > distance_threshold_um)])
-            orphaned = len(df_spots[(df_spots['Dist_to_Muscle_um'] > distance_threshold_um) & (df_spots['Dist_to_Neuron_um'] > distance_threshold_um)])
-            
+
+            near_m_only = len(
+                df_spots[
+                    (df_spots["Dist_to_Muscle_um"] <= distance_threshold_um)
+                    & (df_spots["Dist_to_Neuron_um"] > distance_threshold_um)
+                ]
+            )
+            near_n_only = len(
+                df_spots[
+                    (df_spots["Dist_to_Neuron_um"] <= distance_threshold_um)
+                    & (df_spots["Dist_to_Muscle_um"] > distance_threshold_um)
+                ]
+            )
+            orphaned = len(
+                df_spots[
+                    (df_spots["Dist_to_Muscle_um"] > distance_threshold_um)
+                    & (df_spots["Dist_to_Neuron_um"] > distance_threshold_um)
+                ]
+            )
+
             # Fisher's Exact Test to determine if proximity to Neuron is associated with proximity to Muscle
             from scipy.stats import fisher_exact
+
             _, fisher_p = fisher_exact([[nmj_count, near_m_only], [near_n_only, orphaned]])
-            
-            # Pre-calculate spatial classifications before saving downstream
-            def classify_quadrant(row):
-                if row['Dist_to_Muscle_um'] <= distance_threshold_um and row['Dist_to_Neuron_um'] <= distance_threshold_um:
-                    return 'NMJ'
-                elif row['Dist_to_Muscle_um'] <= distance_threshold_um:
-                    return 'Aneural AChR clusters'
-                elif row['Dist_to_Neuron_um'] <= distance_threshold_um:
-                    return 'Neuron-associated BTX signal'
-                else:
-                    return 'Orphaned'
-            
-            df_spots['BTX signal class'] = df_spots.apply(classify_quadrant, axis=1)
-            df_spots = normalize_btx_signal_classes(df_spots)
 
             out_csv = os.path.join(current_d, f"{czi_file.replace('.czi', '')}_analysis.csv")
             df_spots.to_csv(out_csv, index=False)
-            
+
             # Tag source file and stream to master CSV to avoid RAM blow-up on large all-folder runs
-            df_spots['SOURCE_IMAGE'] = czi_file
-            df_spots['SOURCE_FOLDER'] = os.path.basename(os.path.normpath(current_d))
-            cols = df_spots.columns.tolist()
-            cols.insert(0, cols.pop(cols.index('SOURCE_IMAGE')))
-            cols.insert(0, cols.pop(cols.index('SOURCE_FOLDER')))
-            df_spots_master = df_spots.reindex(columns=cols)
-            df_spots_master.to_csv(master_csv, mode='a', header=(master_rows_written == 0), index=False)
+            df_spots_master = df_spots.copy()
+            df_spots_master["SOURCE_IMAGE"] = czi_file
+            df_spots_master["SOURCE_FOLDER"] = os.path.basename(os.path.normpath(current_d))
+            cols = df_spots_master.columns.tolist()
+            cols.insert(0, cols.pop(cols.index("SOURCE_IMAGE")))
+            cols.insert(0, cols.pop(cols.index("SOURCE_FOLDER")))
+            df_spots_master = df_spots_master.reindex(columns=cols)
+            df_spots_master.to_csv(master_csv, mode="a", header=(master_rows_written == 0), index=False)
             master_rows_written += len(df_spots_master)
-            
-            all_file_stats.append({
-                "File": czi_file,
-                "Total Spots": total_spots,
-                "NMJs (Both)": nmj_count,
-                "Near Aneural AChR clusters": near_m_only,
-                "Near Neuron-associated BTX signal": near_n_only,
-                "Orphaned": orphaned,
-                "Formation Rate (%)": formation_rate,
-                "Fisher P-Value": fisher_p
-            })
+
+            all_file_stats.append(
+                {
+                    "File": czi_file,
+                    "Total Spots": total_spots,
+                    "NMJs (Both)": nmj_count,
+                    "Near Aneural AChR clusters": near_m_only,
+                    "Near Neuron-associated BTX signal": near_n_only,
+                    "Orphaned": orphaned,
+                    "Formation Rate (%)": formation_rate,
+                    "Fisher P-Value": fisher_p,
+                }
+            )
 
             # Memory-safe fast path: skip all figure/composite creation unless PNG export is requested.
             if not save_pngs:
