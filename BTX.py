@@ -359,6 +359,8 @@ def detect_blobs_stable(img_btx_norm, min_diameter_um, max_diameter_um, pixel_si
         min_sigma=min_sigma_px,
         max_sigma=max_sigma_px,
         threshold=threshold_for_dog,
+        # Finer than default 1.6 so the scale pyramid is not too coarse (avoids only 2 discrete radii).
+        sigma_ratio=1.1,
     )
     if len(blobs) == 0:
         return blobs, dog_scale, sigma_cap
