@@ -1284,13 +1284,18 @@ if run_current or run_all:
             
             # Graph 9: Mean Intensity KDE
             if len(df_spots) > 0:
+                _int_vals_img = df_spots['MEAN_INTENSITY'].dropna() if 'MEAN_INTENSITY' in df_spots.columns else pd.Series(dtype=float)
+                _int_max_img = float(_int_vals_img.quantile(0.999)) if len(_int_vals_img) > 0 else None
                 sns.kdeplot(
                     data=df_spots, x='MEAN_INTENSITY', hue='BTX signal class',
                     hue_order=BTX_SIGNAL_CLASS_ORDER,
                     palette=BTX_SIGNAL_CLASS_PALETTE, ax=ax_intensity_kde,
                     common_norm=False, fill=True,
                     warn_singular=False,
+                    clip=(0, _int_max_img) if _int_max_img is not None else None,
                 )
+                if _int_max_img is not None:
+                    ax_intensity_kde.set_xlim(0, _int_max_img * 1.05)
             intensity_title_img, _paired_int_img = nmj_vs_orphan_intensity_wilcoxon_title(
                 df_spots.assign(SOURCE_IMAGE=czi_file) if len(df_spots) else df_spots,
                 label_base="5. Receptor Intensity KDE",
@@ -1554,13 +1559,18 @@ if run_current or run_all:
 
         # 5. Mean Intensity KDE (paired Wilcoxon: median NMJ vs Orphan per image)
         if len(master_df) > 0:
+            _int_vals = master_df['MEAN_INTENSITY'].dropna() if 'MEAN_INTENSITY' in master_df.columns else pd.Series(dtype=float)
+            _int_max = float(_int_vals.quantile(0.999)) if len(_int_vals) > 0 else None
             sns.kdeplot(
                 data=master_df, x='MEAN_INTENSITY', hue='BTX signal class',
                 hue_order=BTX_SIGNAL_CLASS_ORDER,
                 palette=BTX_SIGNAL_CLASS_PALETTE, ax=ax_intensity_kde,
                 common_norm=False, fill=True,
                 warn_singular=False,
+                clip=(0, _int_max) if _int_max is not None else None,
             )
+            if _int_max is not None:
+                ax_intensity_kde.set_xlim(0, _int_max * 1.05)
         intensity_title, paired_intensity = nmj_vs_orphan_intensity_wilcoxon_title(
             master_df,
             label_base="5. Global Receptor Intensity",
