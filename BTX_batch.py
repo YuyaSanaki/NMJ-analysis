@@ -38,6 +38,30 @@ def normalize_btx_signal_classes(df):
     )
     return out
 
+
+def same_dir(a, b):
+    """True if paths refer to the same directory (avoids join/rel vs abs mismatches on Docker/macOS)."""
+    return os.path.normpath(os.path.abspath(a)) == os.path.normpath(os.path.abspath(b))
+
+
+def collect_czi_jobs(target_dirs):
+    """
+    All .czi files under each target directory, including nested subfolders (not only listdir one level).
+    Returns sorted (abs_dirpath, filename) pairs; abs_dirpath is the folder that should receive per-image outputs.
+    """
+    out = []
+    for target_d in target_dirs:
+        root = os.path.normpath(os.path.abspath(target_d))
+        if not os.path.isdir(root):
+            continue
+        for dirpath, _dirnames, filenames in os.walk(root):
+            for f in filenames:
+                if f.lower().endswith(".czi"):
+                    out.append((os.path.normpath(os.path.abspath(dirpath)), f))
+    out.sort(key=lambda t: (t[0].lower(), t[1].lower()))
+    return out
+
+
 st.set_page_config(page_title="NMJ Pipeline", layout="wide")
 
 st.title("🔬 Multiple-Image Batch NMJ Pipeline")
@@ -572,17 +596,19 @@ if run_current or run_all:
     status = st.empty()
     
     target_dirs = [folder_path] if run_current else [os.path.join(base_dir, d) for d in folders]
-    
-    all_target_czis = []
-    for target_d in target_dirs:
-        for f in os.listdir(target_d):
-            if f.endswith('.czi'):
-                all_target_czis.append((target_d, f))
+
+    # Recursive discovery: .czi in subfolders (e.g. Data/Cond1/slide/1.czi) are included; listdir() missed them
+    # so per-image *_analysis.csv / *_NMJ_Plot.png never appeared next to the files the user was checking.
+    all_target_czis = collect_czi_jobs(target_dirs)
 
     if run_all:
-        master_csv = os.path.join(".", "ALL_FOLDERS_MASTER_RESULTS.csv")
-        master_png = os.path.join(".", "ALL_FOLDERS_SUMMARY.png")
-        summary_table_csv = os.path.join(".", "ALL_FOLDERS_SUMMARY_TABLE.csv")
+        # Use the active dataset folder (same mount as per-image outputs), not CWD / repo root.
+        # Writing only to "." hid ALL_FOLDERS_* next to the app in Docker; users looking inside
+        # a data subfolder saw no new files and assumed the run failed to save.
+        all_folders_dir = os.path.abspath(folder_path)
+        master_csv = os.path.join(all_folders_dir, "ALL_FOLDERS_MASTER_RESULTS.csv")
+        master_png = os.path.join(all_folders_dir, "ALL_FOLDERS_SUMMARY.png")
+        summary_table_csv = os.path.join(all_folders_dir, "ALL_FOLDERS_SUMMARY_TABLE.csv")
     else:
         master_csv = os.path.join(folder_path, "BATCH_MASTER_RESULTS.csv")
         master_png = os.path.join(folder_path, "BATCH_SUMMARY.png")
@@ -596,7 +622,7 @@ if run_current or run_all:
         czi_path = os.path.join(current_d, czi_file)
         
         # Determine config logic based on whether we exist natively in the actively mapped UI window
-        if current_d == folder_path and czi_file in file_configs:
+        if same_dir(current_d, folder_path) and czi_file in file_configs:
             conf = file_configs[czi_file]
         else:
             # For folders outside the active UI, try loading saved per-folder configs first
