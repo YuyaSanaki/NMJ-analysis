@@ -70,7 +70,7 @@ def nmj_vs_orphan_intensity_wilcoxon_title(df, *, label_base="5. Global Receptor
         return f"{label_base} (Test Failed)", paired
 
     sig = "***" if p_val < 0.001 else "**" if p_val < 0.01 else "*" if p_val < 0.05 else "ns"
-    title = f"{label_base} (P = {p_val:.4g} {sig})"
+    title = f"{label_base} (Wilcoxon P = {p_val:.4g} {sig})"
     return title, paired
 
 
@@ -79,18 +79,24 @@ def proximity_joint_axes(
 ):
     """Proximity scatter + marginal KDEs. If title_first, top row is for the panel title (axes off), then x-KDE, then main+y-KDE.
 
-    When large_main_panel is True (e.g. ALL_FOLDERS summary), height/width ratios favor a larger
-    central scatter and thinner marginal density strips to reduce empty space.
+    When large_main_panel is True (e.g. ALL_FOLDERS aggregate dashboard), use wider marginal strips so
+    tick labels resolve without constrained_layout inflating gutters; inner hspace/wspace stay tight.
     """
     if title_first:
         if large_main_panel:
-            height_ratios = [0.2, 0.55, 7.0]
-            width_ratios = [7.0, 0.65]
+            height_ratios = [0.25, 1.0, 5.0]
+            width_ratios = [5.0, 1.0]
         else:
             height_ratios = [0.28, 1, 4]
             width_ratios = [4, 1]
+
         inner = outer_cell.subgridspec(
-            3, 2, height_ratios=height_ratios, width_ratios=width_ratios, hspace=hspace, wspace=wspace
+            3,
+            2,
+            height_ratios=height_ratios,
+            width_ratios=width_ratios,
+            hspace=0.01,
+            wspace=0.01,
         )
         ax_title = fig.add_subplot(inner[0, :])
         ax_title.axis("off")
@@ -216,10 +222,12 @@ def draw_proximity_joint(
         ax_main.set_title(full_title)
     ax_main.set_xlabel("Distance to Muscle — spot edge (μm)")
     ax_main.set_ylabel("Distance to Neuron — spot edge (μm)")
+
+    # Marginal KDEs: omit axis labels so subplots can sit flush (avoids layout gutter for "Density").
     ax_kde_x.set_xlabel("")
-    ax_kde_x.set_ylabel("Density")
+    ax_kde_x.set_ylabel("")
     ax_kde_y.set_ylabel("")
-    ax_kde_y.set_xlabel("Density")
+    ax_kde_y.set_xlabel("")
 
 
 def same_dir(a, b):
@@ -1421,6 +1429,7 @@ if run_current or run_all:
         # ALL-folder mode: 4×2 rows (panel 6 = Friedman specificity; control chart on bottom).
         if run_all:
             fig = plt.figure(figsize=(24, 34), constrained_layout=True)
+            fig.set_constrained_layout_pads(w_pad=0.02, h_pad=0.02, hspace=0.01, wspace=0.01)
             outer = fig.add_gridspec(4, 2)
         else:
             fig = plt.figure(figsize=(20, 24), constrained_layout=True)
