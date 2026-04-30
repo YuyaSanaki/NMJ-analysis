@@ -602,10 +602,9 @@ if run_current or run_all:
     all_target_czis = collect_czi_jobs(target_dirs)
 
     if run_all:
-        # Use the active dataset folder (same mount as per-image outputs), not CWD / repo root.
-        # Writing only to "." hid ALL_FOLDERS_* next to the app in Docker; users looking inside
-        # a data subfolder saw no new files and assumed the run failed to save.
-        all_folders_dir = os.path.abspath(folder_path)
+        # Aggregate artifacts for "ALL Folders" live at project root (same as base_dir / Docker WORKDIR)
+        # so they are easy to find alongside the batch app, not inside the selected dataset subfolder.
+        all_folders_dir = os.path.abspath(base_dir)
         master_csv = os.path.join(all_folders_dir, "ALL_FOLDERS_MASTER_RESULTS.csv")
         master_png = os.path.join(all_folders_dir, "ALL_FOLDERS_SUMMARY.png")
         summary_table_csv = os.path.join(all_folders_dir, "ALL_FOLDERS_SUMMARY_TABLE.csv")

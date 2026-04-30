@@ -87,11 +87,11 @@ With **`docker compose --profile batch up --build`**:
 
 ## 📊 Outputs (batch)
 
-Artifacts are written next to the data (and optional project-wide master CSVs when using **ALL Folders**):
+Artifacts are written next to the data. **ALL Folders** runs additionally write **`ALL_FOLDERS_MASTER_RESULTS.csv`**, **`ALL_FOLDERS_SUMMARY.png`**, and **`ALL_FOLDERS_SUMMARY_TABLE.csv`** in the **project root** (the app working directory, e.g. repo / `/app` in Docker).
 
-1. **`BATCH_MASTER_RESULTS.csv`** (or **`ALL_FOLDERS_MASTER_RESULTS.csv`**) — combined spot table with `SOURCE_FOLDER` / `SOURCE_IMAGE` where applicable.
+1. **`BATCH_MASTER_RESULTS.csv`** (current-folder batch only) or **`ALL_FOLDERS_MASTER_RESULTS.csv`** (root; all-folder batch) — combined spot table with `SOURCE_FOLDER` / `SOURCE_IMAGE` where applicable.
 2. **`[Filename]_analysis.csv`** — per-image spot table.
 3. **`[Filename]_NMJ_Plot.png`** — 9-panel figure (optional during batch; can be turned off in the UI).
-4. Summary PNGs such as **`BATCH_SUMMARY.png`** / **`ALL_FOLDERS_SUMMARY.png`** when a batch run completes with data.
+4. Summary PNGs: **`BATCH_SUMMARY.png`** (next to the selected folder) or **`ALL_FOLDERS_SUMMARY.png`** (project root) when a batch run completes with data.
 
 Row layout of the per-image 9-panel plot: row 1 — proximity scatter, size KDE, circularity KDE; row 2 — innervation / intensity distributions and BTX view; row 3 — BTX with spots, composite with spots, composite with NMJ-only arrows.
