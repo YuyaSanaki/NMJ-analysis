@@ -1039,6 +1039,23 @@ if run_current or run_all:
 
             _, fisher_p = fisher_exact([[nmj_count, near_m_only], [near_n_only, orphaned]])
 
+            # --- AREA-NORMALIZED DENSITY (muscle zone vs neuron-only vs orphan) ---
+            mask_m_zone = edt_muscle_um <= distance_threshold_um
+            mask_n_zone = edt_neuron_um <= distance_threshold_um
+            um2_per_px = float(pixel_size**2)
+            area_m_um2 = float(np.sum(mask_m_zone)) * um2_per_px
+            area_n_um2 = float(np.sum(mask_n_zone & ~mask_m_zone)) * um2_per_px
+            area_o_um2 = float(np.sum(~mask_m_zone & ~mask_n_zone)) * um2_per_px
+
+            # Reuse the existing quadrant counts; muscle zone includes NMJs + aneural-near-muscle.
+            c_m = int(nmj_count) + int(near_m_only)
+            c_n_only = int(near_n_only)
+            c_orphan = int(orphaned)
+
+            dens_m = (c_m / area_m_um2 * 1000) if area_m_um2 > 0 else 0.0
+            dens_n = (c_n_only / area_n_um2 * 1000) if area_n_um2 > 0 else 0.0
+            dens_o = (c_orphan / area_o_um2 * 1000) if area_o_um2 > 0 else 0.0
+
             out_csv = os.path.join(current_d, f"{czi_file.replace('.czi', '')}_analysis.csv")
             df_spots.to_csv(out_csv, index=False)
 
@@ -1056,6 +1073,7 @@ if run_current or run_all:
             all_file_stats.append(
                 {
                     "File": czi_file,
+                    "Folder": os.path.basename(os.path.normpath(current_d)),
                     "Total Spots": total_spots,
                     "NMJs (Both)": nmj_count,
                     "Near Aneural AChR clusters": near_m_only,
@@ -1063,6 +1081,12 @@ if run_current or run_all:
                     "Orphaned": orphaned,
                     "Formation Rate (%)": formation_rate,
                     "Fisher P-Value": fisher_p,
+                    "Density_Muscle": dens_m,
+                    "Density_Neuron": dens_n,
+                    "Density_Orphan": dens_o,
+                    "Area_Muscle_um2": area_m_um2,
+                    "Area_Neuron_um2": area_n_um2,
+                    "Area_Orphan_um2": area_o_um2,
                 }
             )
 
@@ -1215,7 +1239,22 @@ if run_current or run_all:
             ax_comp_arrows.imshow(composite_rgb)
             ax_comp_arrows.set_title("10. Composite + Functional NMJs Only")
             ax_comp_arrows.axis('off')
-            ax_unused_1.axis('off')
+            dens_data = pd.DataFrame({
+                "Zone": ["Muscle", "Neuron", "Orphan"],
+                "Density": [dens_m, dens_n, dens_o],
+            })
+            sns.barplot(
+                data=dens_data,
+                x="Zone",
+                y="Density",
+                hue="Zone",
+                palette=["red", "blue", "gray"],
+                legend=False,
+                ax=ax_unused_1,
+            )
+            ax_unused_1.set_title("11. BTX Density (Spots/1000 μm²)")
+            ax_unused_1.set_ylabel("Spots / 1000 μm²")
+            ax_unused_1.set_xlabel("")
             ax_unused_2.axis('off')
             
             by_spot_id = df_spots.set_index("SPOT_ID")
@@ -1328,7 +1367,7 @@ if run_current or run_all:
             st.success(f"All-folders summary table saved: `{summary_table_csv}`")
 
         # Create summary dashboard.
-        # ALL-folder mode: 4×2 rows (7 numbered panels — correlation beside intensity; control chart on bottom).
+        # ALL-folder mode: 4×2 rows (panel 6 = Friedman specificity; control chart on bottom).
         if run_all:
             fig = plt.figure(figsize=(24, 34), constrained_layout=True)
             outer = fig.add_gridspec(4, 2)
@@ -1343,13 +1382,10 @@ if run_current or run_all:
         ax_circ_kde = fig.add_subplot(outer[1, 0])
         ax_overlap_kde = fig.add_subplot(outer[1, 1])
         ax_intensity_kde = fig.add_subplot(outer[2, 0])
-        if run_all:
-            ax_corr = fig.add_subplot(outer[2, 1])
-        else:
-            ax_extra = fig.add_subplot(outer[2, 1])
+        ax_spec = fig.add_subplot(outer[2, 1])
 
         # 1. NMJ Proximity (scatter + marginal KDEs)
-        from scipy.stats import fisher_exact
+        from scipy.stats import fisher_exact, friedmanchisquare
         total_nmj = len(master_df[master_df['BTX signal class'] == 'NMJ'])
         total_m_only = len(master_df[master_df['BTX signal class'] == 'Aneural AChR clusters'])
         total_n_only = len(master_df[master_df['BTX signal class'] == 'Neuron-associated BTX signal'])
@@ -1421,41 +1457,73 @@ if run_current or run_all:
         ax_intensity_kde.set_xlabel('Mean Fluorescence Intensity')
         ax_intensity_kde.set_ylabel('Probability Density')
 
-        if run_all:
-            # 6. Per-class correlation: over all spots, Pearson corr(feature, indicator in class)
-            corr_features = ['RADIUS', 'CIRCULARITY', 'MEAN_INTENSITY', 'INNERVATION_OVERLAP_PCT', 'Dist_to_Muscle_um', 'Dist_to_Neuron_um']
-            corr_records = []
-            for cls in BTX_SIGNAL_CLASS_ORDER:
-                indicator = (master_df['BTX signal class'] == cls).astype(float)
-                row = {'BTX signal class': cls}
-                if indicator.nunique() < 2 or len(master_df) < 3:
-                    for feat in corr_features:
-                        row[feat] = np.nan
-                else:
-                    for feat in corr_features:
-                        row[feat] = master_df[feat].corr(indicator)
-                corr_records.append(row)
-            corr_df = pd.DataFrame(corr_records).set_index('BTX signal class')
-            if corr_df.notna().to_numpy().any():
-                sns.heatmap(
-                    corr_df,
-                    cmap='coolwarm',
-                    center=0.0,
-                    vmin=-1.0,
-                    vmax=1.0,
-                    annot=True,
-                    fmt='.2f',
-                    linewidths=0.5,
-                    ax=ax_corr
+        # 6. BTX specificity: area-normalized zone densities (Friedman; paired per image)
+        ax_spec.clear()
+        stats_df_spec = pd.DataFrame(all_file_stats)
+        if len(stats_df_spec) >= 2:
+            melt_df = stats_df_spec.melt(
+                id_vars=["File"],
+                value_vars=["Density_Muscle", "Density_Neuron", "Density_Orphan"],
+                var_name="Zone",
+                value_name="Density",
+            )
+            melt_df["Zone"] = melt_df["Zone"].str.replace("Density_", "", regex=False)
+            try:
+                _stat_friedman, p_friedman = friedmanchisquare(
+                    stats_df_spec["Density_Muscle"],
+                    stats_df_spec["Density_Neuron"],
+                    stats_df_spec["Density_Orphan"],
                 )
-            else:
-                ax_corr.text(0.5, 0.5, 'Not enough data for\nper-class correlations', ha='center', va='center')
-                ax_corr.set_axis_off()
-            ax_corr.set_title('6. Per-Class Correlation (feature vs class membership)')
-            ax_corr.set_xlabel('Feature')
-            ax_corr.set_ylabel('BTX signal class')
+                sig_star = (
+                    "***" if p_friedman < 0.001 else "**" if p_friedman < 0.01 else "*" if p_friedman < 0.05 else "ns"
+                )
+                title_str = f"6. BTX Enrichment (Friedman P = {p_friedman:.4g} {sig_star})"
+            except ValueError:
+                title_str = "6. BTX Enrichment (Insufficient Variance)"
+                p_friedman = 1.0
+
+            sns.boxplot(
+                data=melt_df,
+                x="Zone",
+                y="Density",
+                hue="Zone",
+                palette=["red", "blue", "gray"],
+                legend=False,
+                ax=ax_spec,
+                showfliers=False,
+            )
+            sns.stripplot(
+                data=melt_df, x="Zone", y="Density", color="black", alpha=0.4, jitter=True, ax=ax_spec
+            )
+            ax_spec.set_title(title_str)
+            ax_spec.set_ylabel("Spots / 1000 μm²")
+            ax_spec.set_xlabel("Target Tissue Zone")
+            if len(stats_df_spec) < 5:
+                ax_spec.text(
+                    0.95,
+                    0.05,
+                    f"Low N ({len(stats_df_spec)}) limits power",
+                    transform=ax_spec.transAxes,
+                    ha="right",
+                    fontsize=9,
+                    alpha=0.7,
+                )
+
+            if run_all:
+                st.markdown("### 🧪 Enrichment confirmation")
+                if p_friedman < 0.05:
+                    st.success(
+                        "Confirmed: BTX signals are significantly enriched in specific tissue zones "
+                        f"(Friedman p={p_friedman:.4e}). This indicates staining is not uniform random background."
+                    )
+                else:
+                    st.warning(
+                        "Note: Density differences across zones did not reach statistical significance "
+                        f"(Friedman p={p_friedman:.4g}). Check for high background or low sample count."
+                    )
         else:
-            ax_extra.axis('off')  # Keep same single-folder layout
+            ax_spec.text(0.5, 0.5, "Insufficient images\nfor specificity test", ha="center", va="center")
+            ax_spec.set_axis_off()
 
         if run_all:
             ax_control = fig.add_subplot(outer[3, :])
@@ -1486,10 +1554,11 @@ if run_current or run_all:
                 y='nmj_rate_pct',
                 estimator=np.mean,
                 errorbar='sd',
-                join=False,
+                linestyle='none',
                 color='red',
                 markers='D',
-                scale=0.8,
+                markersize=7,
+                linewidth=1.5,
                 ax=ax_control
             )
             ax_control.set_title('7. Per-Image NMJ Rate Control Chart')
@@ -1513,10 +1582,6 @@ if run_current or run_all:
             pass
         try:
             del per_image
-        except NameError:
-            pass
-        try:
-            del corr_df
         except NameError:
             pass
         gc.collect()
