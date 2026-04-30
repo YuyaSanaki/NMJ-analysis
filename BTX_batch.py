@@ -39,11 +39,58 @@ def normalize_btx_signal_classes(df):
     return out
 
 
-def proximity_joint_axes(fig, outer_cell, hspace=0.08, wspace=0.08, title_first=False):
-    """Proximity scatter + marginal KDEs. If title_first, top row is for the panel title (axes off), then x-KDE, then main+y-KDE."""
+def nmj_vs_orphan_intensity_wilcoxon_title(df, *, label_base="5. Global Receptor Intensity"):
+    """Median MEAN_INTENSITY per SOURCE_IMAGE for NMJ vs Orphaned; paired Wilcoxon (greater).
+
+    Returns (axes title string, paired table with columns NMJ, Orphaned — may be empty).
+    """
+    from scipy.stats import wilcoxon
+
+    if df is None or len(df) == 0:
+        return f"{label_base} (No Data)", pd.DataFrame()
+    required = {"SOURCE_IMAGE", "BTX signal class", "MEAN_INTENSITY"}
+    if not required <= set(df.columns):
+        return f"{label_base} (Missing Columns)", pd.DataFrame()
+
+    intensity_stats = (
+        df.groupby(["SOURCE_IMAGE", "BTX signal class"])["MEAN_INTENSITY"].median().unstack()
+    )
+    if "NMJ" not in intensity_stats.columns or "Orphaned" not in intensity_stats.columns:
+        return f"{label_base} (Missing Classes)", pd.DataFrame()
+
+    paired = intensity_stats[["NMJ", "Orphaned"]].dropna()
+    if len(paired) < 3:
+        return f"{label_base} (Insufficient Pairs)", paired
+
+    try:
+        _wi_stat, p_val = wilcoxon(
+            paired["NMJ"], paired["Orphaned"], alternative="greater", zero_method="wilcox"
+        )
+    except ValueError:
+        return f"{label_base} (Test Failed)", paired
+
+    sig = "***" if p_val < 0.001 else "**" if p_val < 0.01 else "*" if p_val < 0.05 else "ns"
+    title = f"{label_base} (P = {p_val:.4g} {sig})"
+    return title, paired
+
+
+def proximity_joint_axes(
+    fig, outer_cell, hspace=0.08, wspace=0.08, title_first=False, *, large_main_panel=False
+):
+    """Proximity scatter + marginal KDEs. If title_first, top row is for the panel title (axes off), then x-KDE, then main+y-KDE.
+
+    When large_main_panel is True (e.g. ALL_FOLDERS summary), height/width ratios favor a larger
+    central scatter and thinner marginal density strips to reduce empty space.
+    """
     if title_first:
+        if large_main_panel:
+            height_ratios = [0.2, 0.55, 7.0]
+            width_ratios = [7.0, 0.65]
+        else:
+            height_ratios = [0.28, 1, 4]
+            width_ratios = [4, 1]
         inner = outer_cell.subgridspec(
-            3, 2, height_ratios=[0.28, 1, 4], width_ratios=[4, 1], hspace=hspace, wspace=wspace
+            3, 2, height_ratios=height_ratios, width_ratios=width_ratios, hspace=hspace, wspace=wspace
         )
         ax_title = fig.add_subplot(inner[0, :])
         ax_title.axis("off")
@@ -618,7 +665,7 @@ def save_all_folders_summary_png(master_df, out_png, distance_threshold_um):
     ax_overlap = fig.add_subplot(outer[1, 1])
     ax_distance = fig.add_subplot(outer[2, 0])
     ax_prox_main, ax_prox_kde_x, ax_prox_kde_y, ax_prox_title = proximity_joint_axes(
-        fig, outer[2, 1], title_first=True
+        fig, outer[2, 1], title_first=True, large_main_panel=True
     )
 
     sns.barplot(data=folder_stats, x="SOURCE_FOLDER", y="nmj_rate_pct", ax=ax_nmj_rate, color="#d62728")
@@ -1196,7 +1243,11 @@ if run_current or run_all:
                     common_norm=False, fill=True,
                     warn_singular=False,
                 )
-            ax_intensity_kde.set_title('5. Receptor Intensity KDE')
+            intensity_title_img, _paired_int_img = nmj_vs_orphan_intensity_wilcoxon_title(
+                df_spots.assign(SOURCE_IMAGE=czi_file) if len(df_spots) else df_spots,
+                label_base="5. Receptor Intensity KDE",
+            )
+            ax_intensity_kde.set_title(intensity_title_img)
             ax_intensity_kde.set_xlabel('Mean Fluorescence Intensity')
             ax_intensity_kde.set_ylabel('Probability Density')
             
@@ -1376,7 +1427,7 @@ if run_current or run_all:
             outer = fig.add_gridspec(3, 2)
 
         ax_scatter, ax_prox_kde_x, ax_prox_kde_y, ax_prox_title = proximity_joint_axes(
-            fig, outer[0, 0], title_first=True
+            fig, outer[0, 0], title_first=True, large_main_panel=run_all
         )
         ax_size_kde = fig.add_subplot(outer[0, 1])
         ax_circ_kde = fig.add_subplot(outer[1, 0])
@@ -1444,7 +1495,7 @@ if run_current or run_all:
         ax_overlap_kde.set_xlabel('NMJ Innervation (%)')
         ax_overlap_kde.set_ylabel('Count')
 
-        # 5. Mean Intensity KDE
+        # 5. Mean Intensity KDE (paired Wilcoxon: median NMJ vs Orphan per image)
         if len(master_df) > 0:
             sns.kdeplot(
                 data=master_df, x='MEAN_INTENSITY', hue='BTX signal class',
@@ -1453,9 +1504,22 @@ if run_current or run_all:
                 common_norm=False, fill=True,
                 warn_singular=False,
             )
-        ax_intensity_kde.set_title('5. Global Receptor Intensity KDE')
+        intensity_title, paired_intensity = nmj_vs_orphan_intensity_wilcoxon_title(
+            master_df,
+            label_base="5. Global Receptor Intensity",
+        )
+        ax_intensity_kde.set_title(intensity_title)
         ax_intensity_kde.set_xlabel('Mean Fluorescence Intensity')
         ax_intensity_kde.set_ylabel('Probability Density')
+
+        if len(paired_intensity) > 0:
+            orphan_mean = float(paired_intensity["Orphaned"].mean())
+            if orphan_mean > 0:
+                fold_change = float(paired_intensity["NMJ"].mean() / orphan_mean)
+                st.write(
+                    f"**Intensity Enrichment:** NMJs are {fold_change:.2f}x brighter than orphaned "
+                    "background signals."
+                )
 
         # 6. BTX specificity: area-normalized zone densities (Friedman; paired per image)
         ax_spec.clear()
