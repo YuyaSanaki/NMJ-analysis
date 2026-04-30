@@ -39,8 +39,22 @@ def normalize_btx_signal_classes(df):
     return out
 
 
-def proximity_joint_axes(fig, outer_cell, hspace=0.08, wspace=0.08):
-    """Main proximity scatter (bottom-left) + KDE on x (top-left) and y (bottom-right)."""
+def proximity_joint_axes(fig, outer_cell, hspace=0.08, wspace=0.08, title_first=False):
+    """Proximity scatter + marginal KDEs. If title_first, top row is for the panel title (axes off), then x-KDE, then main+y-KDE."""
+    if title_first:
+        inner = outer_cell.subgridspec(
+            3, 2, height_ratios=[0.28, 1, 4], width_ratios=[4, 1], hspace=hspace, wspace=wspace
+        )
+        ax_title = fig.add_subplot(inner[0, :])
+        ax_title.axis("off")
+        ax_kde_x = fig.add_subplot(inner[1, 0])
+        ax_corner = fig.add_subplot(inner[1, 1])
+        ax_corner.axis("off")
+        ax_main = fig.add_subplot(inner[2, 0], sharex=ax_kde_x)
+        ax_kde_y = fig.add_subplot(inner[2, 1], sharey=ax_main)
+        ax_kde_x.tick_params(labelbottom=False)
+        ax_kde_y.tick_params(labelleft=False)
+        return ax_main, ax_kde_x, ax_kde_y, ax_title
     inner = outer_cell.subgridspec(
         2, 2, height_ratios=[1, 4], width_ratios=[4, 1], hspace=hspace, wspace=wspace
     )
@@ -67,35 +81,57 @@ def draw_proximity_joint(
     marginal_alpha=0.35,
     scatter_alpha=0.65,
     scatter_size=None,
+    marginal_combined_black=False,
+    title_ax=None,
 ):
-    """Scatter with marginal KDEs (per class) on muscle (top) and neuron (right) axes."""
+    """Scatter with marginal KDEs on muscle (top) and neuron (right). Optionally one black KDE over all spots."""
     if df is not None and len(df) > 0:
-        sns.kdeplot(
-            data=df,
-            x="Dist_to_Muscle_um",
-            hue="BTX signal class",
-            hue_order=BTX_SIGNAL_CLASS_ORDER,
-            palette=BTX_SIGNAL_CLASS_PALETTE,
-            ax=ax_kde_x,
-            common_norm=False,
-            fill=True,
-            alpha=marginal_alpha,
-            legend=False,
-            warn_singular=False,
-        )
-        sns.kdeplot(
-            data=df,
-            y="Dist_to_Neuron_um",
-            hue="BTX signal class",
-            hue_order=BTX_SIGNAL_CLASS_ORDER,
-            palette=BTX_SIGNAL_CLASS_PALETTE,
-            ax=ax_kde_y,
-            common_norm=False,
-            fill=True,
-            alpha=marginal_alpha,
-            legend=False,
-            warn_singular=False,
-        )
+        if marginal_combined_black:
+            sns.kdeplot(
+                data=df,
+                x="Dist_to_Muscle_um",
+                ax=ax_kde_x,
+                color="black",
+                fill=True,
+                alpha=marginal_alpha,
+                warn_singular=False,
+            )
+            sns.kdeplot(
+                data=df,
+                y="Dist_to_Neuron_um",
+                ax=ax_kde_y,
+                color="black",
+                fill=True,
+                alpha=marginal_alpha,
+                warn_singular=False,
+            )
+        else:
+            sns.kdeplot(
+                data=df,
+                x="Dist_to_Muscle_um",
+                hue="BTX signal class",
+                hue_order=BTX_SIGNAL_CLASS_ORDER,
+                palette=BTX_SIGNAL_CLASS_PALETTE,
+                ax=ax_kde_x,
+                common_norm=False,
+                fill=True,
+                alpha=marginal_alpha,
+                legend=False,
+                warn_singular=False,
+            )
+            sns.kdeplot(
+                data=df,
+                y="Dist_to_Neuron_um",
+                hue="BTX signal class",
+                hue_order=BTX_SIGNAL_CLASS_ORDER,
+                palette=BTX_SIGNAL_CLASS_PALETTE,
+                ax=ax_kde_y,
+                common_norm=False,
+                fill=True,
+                alpha=marginal_alpha,
+                legend=False,
+                warn_singular=False,
+            )
     scatter_kw = dict(
         data=df,
         x="Dist_to_Muscle_um",
@@ -113,9 +149,24 @@ def draw_proximity_joint(
     ax_main.axhline(y=distance_threshold_um, color="black", linestyle="--")
     if fisher_p is not None:
         sig_star = "***" if fisher_p < 0.001 else "**" if fisher_p < 0.01 else "*" if fisher_p < 0.05 else "ns"
-        ax_main.set_title(f"{title} (Fisher P = {fisher_p:{fisher_fmt}} {sig_star})")
+        full_title = f"{title} (Fisher P = {fisher_p:{fisher_fmt}} {sig_star})"
     else:
-        ax_main.set_title(title)
+        full_title = title
+    if title_ax is not None:
+        title_ax.clear()
+        title_ax.axis("off")
+        title_ax.text(
+            0.5,
+            0.5,
+            full_title,
+            transform=title_ax.transAxes,
+            ha="center",
+            va="center",
+            fontsize=11,
+        )
+        ax_main.set_title("")
+    else:
+        ax_main.set_title(full_title)
     ax_main.set_xlabel("Distance to Muscle — spot edge (μm)")
     ax_main.set_ylabel("Distance to Neuron — spot edge (μm)")
     ax_kde_x.set_xlabel("")
@@ -559,14 +610,16 @@ def save_all_folders_summary_png(master_df, out_png, distance_threshold_um):
     total_orph = int((master_df["BTX signal class"] == "Orphaned").sum())
     _, global_fisher_p = fisher_exact([[total_nmj, total_m_only], [total_n_only, total_orph]])
 
-    fig = plt.figure(figsize=(22, 24))
-    outer = fig.add_gridspec(3, 2, hspace=0.35, wspace=0.35)
+    fig = plt.figure(figsize=(22, 24), constrained_layout=True)
+    outer = fig.add_gridspec(3, 2)
     ax_nmj_rate = fig.add_subplot(outer[0, 0])
     ax_total_spots = fig.add_subplot(outer[0, 1])
     ax_radius = fig.add_subplot(outer[1, 0])
     ax_overlap = fig.add_subplot(outer[1, 1])
     ax_distance = fig.add_subplot(outer[2, 0])
-    ax_prox_main, ax_prox_kde_x, ax_prox_kde_y = proximity_joint_axes(fig, outer[2, 1])
+    ax_prox_main, ax_prox_kde_x, ax_prox_kde_y, ax_prox_title = proximity_joint_axes(
+        fig, outer[2, 1], title_first=True
+    )
 
     sns.barplot(data=folder_stats, x="SOURCE_FOLDER", y="nmj_rate_pct", ax=ax_nmj_rate, color="#d62728")
     ax_nmj_rate.set_title("1. NMJ Formation Rate by Folder")
@@ -617,9 +670,11 @@ def save_all_folders_summary_png(master_df, out_png, distance_threshold_um):
         fisher_fmt=".4g",
         scatter_alpha=0.35,
         scatter_size=18,
+        marginal_combined_black=True,
+        title_ax=ax_prox_title,
     )
 
-    plt.tight_layout()
+
     fig.savefig(out_png, bbox_inches="tight")
     plt.close(fig)
     return folder_stats
@@ -1053,7 +1108,9 @@ if run_current or run_all:
             # Added a dedicated "Cleaned BTX only" panel next to the marked BTX view.
             fig = plt.figure(figsize=(24, 30))
             outer = fig.add_gridspec(4, 3, hspace=0.35, wspace=0.35)
-            ax_scatter, ax_prox_kde_x, ax_prox_kde_y = proximity_joint_axes(fig, outer[0, 0])
+            ax_scatter, ax_prox_kde_x, ax_prox_kde_y, ax_prox_title = proximity_joint_axes(
+                fig, outer[0, 0], title_first=True
+            )
             ax_size_kde = fig.add_subplot(outer[0, 1])
             ax_circ_kde = fig.add_subplot(outer[0, 2])
             ax_overlap_kde = fig.add_subplot(outer[1, 0])
@@ -1128,6 +1185,8 @@ if run_current or run_all:
                 "1. NMJ Proximity Analysis",
                 fisher_p=fisher_p,
                 fisher_fmt=".4f",
+                marginal_combined_black=True,
+                title_ax=ax_prox_title,
             )
 
             # Graph 2: Raw and cleaned BTX shown side-by-side for subtraction verification
@@ -1269,20 +1328,25 @@ if run_current or run_all:
             st.success(f"All-folders summary table saved: `{summary_table_csv}`")
 
         # Create summary dashboard.
-        # For ALL-folder mode, extend to a 10-panel figure with extra comparative analytics.
+        # ALL-folder mode: 4×2 rows (7 numbered panels — correlation beside intensity; control chart on bottom).
         if run_all:
-            fig = plt.figure(figsize=(24, 42))
-            outer = fig.add_gridspec(5, 2, hspace=0.35, wspace=0.35)
+            fig = plt.figure(figsize=(24, 34), constrained_layout=True)
+            outer = fig.add_gridspec(4, 2)
         else:
-            fig = plt.figure(figsize=(20, 24))
-            outer = fig.add_gridspec(3, 2, hspace=0.35, wspace=0.35)
+            fig = plt.figure(figsize=(20, 24), constrained_layout=True)
+            outer = fig.add_gridspec(3, 2)
 
-        ax_scatter, ax_prox_kde_x, ax_prox_kde_y = proximity_joint_axes(fig, outer[0, 0])
+        ax_scatter, ax_prox_kde_x, ax_prox_kde_y, ax_prox_title = proximity_joint_axes(
+            fig, outer[0, 0], title_first=True
+        )
         ax_size_kde = fig.add_subplot(outer[0, 1])
         ax_circ_kde = fig.add_subplot(outer[1, 0])
         ax_overlap_kde = fig.add_subplot(outer[1, 1])
         ax_intensity_kde = fig.add_subplot(outer[2, 0])
-        ax_extra = fig.add_subplot(outer[2, 1])
+        if run_all:
+            ax_corr = fig.add_subplot(outer[2, 1])
+        else:
+            ax_extra = fig.add_subplot(outer[2, 1])
 
         # 1. NMJ Proximity (scatter + marginal KDEs)
         from scipy.stats import fisher_exact
@@ -1301,6 +1365,8 @@ if run_current or run_all:
             "1. Global NMJ Proximity Analysis",
             fisher_p=global_fisher_p,
             fisher_fmt=".4g",
+            marginal_combined_black=True,
+            title_ax=ax_prox_title,
         )
 
         # 2. NMJ Size KDE
@@ -1355,104 +1421,22 @@ if run_current or run_all:
         ax_intensity_kde.set_xlabel('Mean Fluorescence Intensity')
         ax_intensity_kde.set_ylabel('Probability Density')
 
-        # 6. Additional panel only for ALL-folder runs
         if run_all:
-            sns.barplot(
-                data=folder_stats_df,
-                x='SOURCE_FOLDER',
-                y='nmj_rate_pct',
-                color='red',
-                ax=ax_extra
-            )
-            ax_extra.set_title('6. NMJ Formation Rate by Folder')
-            ax_extra.set_xlabel('Folder')
-            ax_extra.set_ylabel('NMJ Rate (%)')
-            ax_extra.tick_params(axis='x', rotation=45)
-        else:
-            ax_extra.axis('off') # Keep same single-folder layout
-
-        if run_all:
-            ax_size_overlap = fig.add_subplot(outer[3, 0])
-            ax_forest = fig.add_subplot(outer[3, 1])
-            ax_corr = fig.add_subplot(outer[4, 0])
-            ax_control = fig.add_subplot(outer[4, 1])
-
-            # 7. Spot size vs innervation overlap scatter
-            sns.scatterplot(
-                data=master_df,
-                x='RADIUS',
-                y='INNERVATION_OVERLAP_PCT',
-                hue='BTX signal class',
-                hue_order=BTX_SIGNAL_CLASS_ORDER,
-                palette=BTX_SIGNAL_CLASS_PALETTE,
-                alpha=0.35,
-                s=18,
-                ax=ax_size_overlap
-            )
-            ax_size_overlap.set_title('7. Spot Size vs Innervation Overlap')
-            ax_size_overlap.set_xlabel('Radius (μm)')
-            ax_size_overlap.set_ylabel('Innervation Overlap (%)')
-
-            # 8. Folder-wise NMJ odds ratio (forest style)
-            odds_rows = []
-            for _, fs_row in folder_stats_df.iterrows():
-                folder_name = fs_row['SOURCE_FOLDER']
-                df_f = master_df[master_df['SOURCE_FOLDER'] == folder_name]
-                nmj = int((df_f['BTX signal class'] == 'NMJ').sum())
-                m_only = int((df_f['BTX signal class'] == 'Aneural AChR clusters').sum())
-                n_only = int((df_f['BTX signal class'] == 'Neuron-associated BTX signal').sum())
-                orphan = int((df_f['BTX signal class'] == 'Orphaned').sum())
-
-                # Haldane-Anscombe correction for stability when any cell is zero
-                a = nmj + 0.5
-                b = m_only + 0.5
-                c = n_only + 0.5
-                d = orphan + 0.5
-                odds_ratio = (a * d) / (b * c)
-                se_log_or = np.sqrt((1.0 / a) + (1.0 / b) + (1.0 / c) + (1.0 / d))
-                log_or = np.log(odds_ratio)
-                ci_low = np.exp(log_or - 1.96 * se_log_or)
-                ci_high = np.exp(log_or + 1.96 * se_log_or)
-                odds_rows.append({
-                    'SOURCE_FOLDER': folder_name,
-                    'OR': odds_ratio,
-                    'CI_LOW': ci_low,
-                    'CI_HIGH': ci_high
-                })
-
-            odds_df = pd.DataFrame(odds_rows).sort_values('OR')
-            y_pos = np.arange(len(odds_df))
-            ax_forest.errorbar(
-                odds_df['OR'],
-                y_pos,
-                xerr=[odds_df['OR'] - odds_df['CI_LOW'], odds_df['CI_HIGH'] - odds_df['OR']],
-                fmt='o',
-                color='black',
-                ecolor='black',
-                capsize=3
-            )
-            ax_forest.axvline(1.0, linestyle='--', color='red')
-            ax_forest.set_yticks(y_pos)
-            ax_forest.set_yticklabels(odds_df['SOURCE_FOLDER'])
-            ax_forest.set_xscale('log')
-            ax_forest.set_title('8. Folder-wise NMJ Odds Ratio (95% CI)')
-            ax_forest.set_xlabel('Odds Ratio (log scale)')
-            ax_forest.set_ylabel('Folder')
-
-            # 9. Per-folder correlation heatmap
+            # 6. Per-class correlation: over all spots, Pearson corr(feature, indicator in class)
             corr_features = ['RADIUS', 'CIRCULARITY', 'MEAN_INTENSITY', 'INNERVATION_OVERLAP_PCT', 'Dist_to_Muscle_um', 'Dist_to_Neuron_um']
             corr_records = []
-            for folder_name in folder_stats_df['SOURCE_FOLDER']:
-                df_f = master_df[master_df['SOURCE_FOLDER'] == folder_name].copy()
-                if len(df_f) < 3:
-                    continue
-                df_f['NMJ_NUM'] = df_f['is_NMJ'].astype(float)
-                row = {'SOURCE_FOLDER': folder_name}
-                for feat in corr_features:
-                    row[feat] = df_f[feat].corr(df_f['NMJ_NUM'])
+            for cls in BTX_SIGNAL_CLASS_ORDER:
+                indicator = (master_df['BTX signal class'] == cls).astype(float)
+                row = {'BTX signal class': cls}
+                if indicator.nunique() < 2 or len(master_df) < 3:
+                    for feat in corr_features:
+                        row[feat] = np.nan
+                else:
+                    for feat in corr_features:
+                        row[feat] = master_df[feat].corr(indicator)
                 corr_records.append(row)
-            corr_df = pd.DataFrame(corr_records).set_index('SOURCE_FOLDER') if len(corr_records) > 0 else pd.DataFrame()
-            if not corr_df.empty:
+            corr_df = pd.DataFrame(corr_records).set_index('BTX signal class')
+            if corr_df.notna().to_numpy().any():
                 sns.heatmap(
                     corr_df,
                     cmap='coolwarm',
@@ -1465,13 +1449,18 @@ if run_current or run_all:
                     ax=ax_corr
                 )
             else:
-                ax_corr.text(0.5, 0.5, 'Not enough data for\nper-folder correlations', ha='center', va='center')
+                ax_corr.text(0.5, 0.5, 'Not enough data for\nper-class correlations', ha='center', va='center')
                 ax_corr.set_axis_off()
-            ax_corr.set_title('9. Per-Folder Correlation with NMJ State')
+            ax_corr.set_title('6. Per-Class Correlation (feature vs class membership)')
             ax_corr.set_xlabel('Feature')
-            ax_corr.set_ylabel('Folder')
+            ax_corr.set_ylabel('BTX signal class')
+        else:
+            ax_extra.axis('off')  # Keep same single-folder layout
 
-            # 10. Per-image NMJ rate control chart
+        if run_all:
+            ax_control = fig.add_subplot(outer[3, :])
+
+            # 7. Per-image NMJ rate control chart
             per_image = (
                 master_df.groupby(['SOURCE_FOLDER', 'SOURCE_IMAGE'])
                 .agg(total_spots=('is_NMJ', 'size'), nmj_spots=('is_NMJ', 'sum'))
@@ -1503,12 +1492,11 @@ if run_current or run_all:
                 scale=0.8,
                 ax=ax_control
             )
-            ax_control.set_title('10. Per-Image NMJ Rate Control Chart')
+            ax_control.set_title('7. Per-Image NMJ Rate Control Chart')
             ax_control.set_xlabel('Folder')
             ax_control.set_ylabel('NMJ Rate (%)')
             ax_control.tick_params(axis='x', rotation=45)
 
-        plt.tight_layout()
         st.pyplot(fig)
         fig.savefig(master_png, bbox_inches='tight')
         plt.close(fig)
@@ -1529,10 +1517,6 @@ if run_current or run_all:
             pass
         try:
             del corr_df
-        except NameError:
-            pass
-        try:
-            del odds_df
         except NameError:
             pass
         gc.collect()

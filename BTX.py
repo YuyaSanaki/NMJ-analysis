@@ -36,8 +36,22 @@ def normalize_btx_signal_classes(df):
     return out
 
 
-def proximity_joint_axes(fig, outer_cell, hspace=0.08, wspace=0.08):
-    """Main proximity scatter (bottom-left) + KDE on x (top-left) and y (bottom-right)."""
+def proximity_joint_axes(fig, outer_cell, hspace=0.08, wspace=0.08, title_first=False):
+    """Proximity scatter + marginal KDEs. If title_first, top row is for the panel title (axes off), then x-KDE, then main+y-KDE."""
+    if title_first:
+        inner = outer_cell.subgridspec(
+            3, 2, height_ratios=[0.28, 1, 4], width_ratios=[4, 1], hspace=hspace, wspace=wspace
+        )
+        ax_title = fig.add_subplot(inner[0, :])
+        ax_title.axis("off")
+        ax_kde_x = fig.add_subplot(inner[1, 0])
+        ax_corner = fig.add_subplot(inner[1, 1])
+        ax_corner.axis("off")
+        ax_main = fig.add_subplot(inner[2, 0], sharex=ax_kde_x)
+        ax_kde_y = fig.add_subplot(inner[2, 1], sharey=ax_main)
+        ax_kde_x.tick_params(labelbottom=False)
+        ax_kde_y.tick_params(labelleft=False)
+        return ax_main, ax_kde_x, ax_kde_y, ax_title
     inner = outer_cell.subgridspec(
         2, 2, height_ratios=[1, 4], width_ratios=[4, 1], hspace=hspace, wspace=wspace
     )
@@ -64,35 +78,57 @@ def draw_proximity_joint(
     marginal_alpha=0.35,
     scatter_alpha=0.65,
     scatter_size=None,
+    marginal_combined_black=False,
+    title_ax=None,
 ):
-    """Scatter with marginal KDEs (per class) on muscle (top) and neuron (right) axes."""
+    """Scatter with marginal KDEs on muscle (top) and neuron (right). Optionally one black KDE over all spots."""
     if df is not None and len(df) > 0:
-        sns.kdeplot(
-            data=df,
-            x="Dist_to_Muscle_um",
-            hue="BTX signal class",
-            hue_order=BTX_SIGNAL_CLASS_ORDER,
-            palette=BTX_SIGNAL_CLASS_PALETTE,
-            ax=ax_kde_x,
-            common_norm=False,
-            fill=True,
-            alpha=marginal_alpha,
-            legend=False,
-            warn_singular=False,
-        )
-        sns.kdeplot(
-            data=df,
-            y="Dist_to_Neuron_um",
-            hue="BTX signal class",
-            hue_order=BTX_SIGNAL_CLASS_ORDER,
-            palette=BTX_SIGNAL_CLASS_PALETTE,
-            ax=ax_kde_y,
-            common_norm=False,
-            fill=True,
-            alpha=marginal_alpha,
-            legend=False,
-            warn_singular=False,
-        )
+        if marginal_combined_black:
+            sns.kdeplot(
+                data=df,
+                x="Dist_to_Muscle_um",
+                ax=ax_kde_x,
+                color="black",
+                fill=True,
+                alpha=marginal_alpha,
+                warn_singular=False,
+            )
+            sns.kdeplot(
+                data=df,
+                y="Dist_to_Neuron_um",
+                ax=ax_kde_y,
+                color="black",
+                fill=True,
+                alpha=marginal_alpha,
+                warn_singular=False,
+            )
+        else:
+            sns.kdeplot(
+                data=df,
+                x="Dist_to_Muscle_um",
+                hue="BTX signal class",
+                hue_order=BTX_SIGNAL_CLASS_ORDER,
+                palette=BTX_SIGNAL_CLASS_PALETTE,
+                ax=ax_kde_x,
+                common_norm=False,
+                fill=True,
+                alpha=marginal_alpha,
+                legend=False,
+                warn_singular=False,
+            )
+            sns.kdeplot(
+                data=df,
+                y="Dist_to_Neuron_um",
+                hue="BTX signal class",
+                hue_order=BTX_SIGNAL_CLASS_ORDER,
+                palette=BTX_SIGNAL_CLASS_PALETTE,
+                ax=ax_kde_y,
+                common_norm=False,
+                fill=True,
+                alpha=marginal_alpha,
+                legend=False,
+                warn_singular=False,
+            )
     scatter_kw = dict(
         data=df,
         x="Dist_to_Muscle_um",
@@ -110,9 +146,24 @@ def draw_proximity_joint(
     ax_main.axhline(y=distance_threshold_um, color="black", linestyle="--")
     if fisher_p is not None:
         sig_star = "***" if fisher_p < 0.001 else "**" if fisher_p < 0.01 else "*" if fisher_p < 0.05 else "ns"
-        ax_main.set_title(f"{title} (Fisher P = {fisher_p:{fisher_fmt}} {sig_star})")
+        full_title = f"{title} (Fisher P = {fisher_p:{fisher_fmt}} {sig_star})"
     else:
-        ax_main.set_title(title)
+        full_title = title
+    if title_ax is not None:
+        title_ax.clear()
+        title_ax.axis("off")
+        title_ax.text(
+            0.5,
+            0.5,
+            full_title,
+            transform=title_ax.transAxes,
+            ha="center",
+            va="center",
+            fontsize=11,
+        )
+        ax_main.set_title("")
+    else:
+        ax_main.set_title(full_title)
     ax_main.set_xlabel("Distance to Muscle — spot edge (μm)")
     ax_main.set_ylabel("Distance to Neuron — spot edge (μm)")
     ax_kde_x.set_xlabel("")
@@ -670,7 +721,9 @@ if st.button("🚀 Process Pipeline", type="primary"):
             fig = plt.figure(figsize=(24, 24))
             outer = fig.add_gridspec(3, 3, hspace=0.35, wspace=0.35)
 
-            ax_scatter, ax_prox_kde_x, ax_prox_kde_y = proximity_joint_axes(fig, outer[0, 0])
+            ax_scatter, ax_prox_kde_x, ax_prox_kde_y, ax_prox_title = proximity_joint_axes(
+                fig, outer[0, 0], title_first=True
+            )
             ax_size_kde = fig.add_subplot(outer[0, 1])
             ax_circ_kde = fig.add_subplot(outer[0, 2])
             ax_overlap_kde = fig.add_subplot(outer[1, 0])
@@ -740,6 +793,8 @@ if st.button("🚀 Process Pipeline", type="primary"):
                 "1. NMJ Proximity Analysis",
                 fisher_p=fisher_p,
                 fisher_fmt=".4f",
+                marginal_combined_black=True,
+                title_ax=ax_prox_title,
             )
 
             # Graph 2: Raw and cleaned BTX shown side-by-side for subtraction verification
