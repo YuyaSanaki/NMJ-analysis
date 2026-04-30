@@ -36,6 +36,91 @@ def normalize_btx_signal_classes(df):
     return out
 
 
+def proximity_joint_axes(fig, outer_cell, hspace=0.08, wspace=0.08):
+    """Main proximity scatter (bottom-left) + KDE on x (top-left) and y (bottom-right)."""
+    inner = outer_cell.subgridspec(
+        2, 2, height_ratios=[1, 4], width_ratios=[4, 1], hspace=hspace, wspace=wspace
+    )
+    ax_kde_x = fig.add_subplot(inner[0, 0])
+    ax_corner = fig.add_subplot(inner[0, 1])
+    ax_corner.axis("off")
+    ax_main = fig.add_subplot(inner[1, 0], sharex=ax_kde_x)
+    ax_kde_y = fig.add_subplot(inner[1, 1], sharey=ax_main)
+    ax_kde_x.tick_params(labelbottom=False)
+    ax_kde_y.tick_params(labelleft=False)
+    return ax_main, ax_kde_x, ax_kde_y
+
+
+def draw_proximity_joint(
+    ax_main,
+    ax_kde_x,
+    ax_kde_y,
+    df,
+    distance_threshold_um,
+    title,
+    *,
+    fisher_p=None,
+    fisher_fmt=".4g",
+    marginal_alpha=0.35,
+    scatter_alpha=0.65,
+    scatter_size=None,
+):
+    """Scatter with marginal KDEs (per class) on muscle (top) and neuron (right) axes."""
+    if df is not None and len(df) > 0:
+        sns.kdeplot(
+            data=df,
+            x="Dist_to_Muscle_um",
+            hue="BTX signal class",
+            hue_order=BTX_SIGNAL_CLASS_ORDER,
+            palette=BTX_SIGNAL_CLASS_PALETTE,
+            ax=ax_kde_x,
+            common_norm=False,
+            fill=True,
+            alpha=marginal_alpha,
+            legend=False,
+            warn_singular=False,
+        )
+        sns.kdeplot(
+            data=df,
+            y="Dist_to_Neuron_um",
+            hue="BTX signal class",
+            hue_order=BTX_SIGNAL_CLASS_ORDER,
+            palette=BTX_SIGNAL_CLASS_PALETTE,
+            ax=ax_kde_y,
+            common_norm=False,
+            fill=True,
+            alpha=marginal_alpha,
+            legend=False,
+            warn_singular=False,
+        )
+    scatter_kw = dict(
+        data=df,
+        x="Dist_to_Muscle_um",
+        y="Dist_to_Neuron_um",
+        hue="BTX signal class",
+        hue_order=BTX_SIGNAL_CLASS_ORDER,
+        palette=BTX_SIGNAL_CLASS_PALETTE,
+        ax=ax_main,
+    )
+    if scatter_size is not None:
+        scatter_kw["s"] = scatter_size
+        scatter_kw["alpha"] = scatter_alpha
+    sns.scatterplot(**scatter_kw)
+    ax_main.axvline(x=distance_threshold_um, color="black", linestyle="--")
+    ax_main.axhline(y=distance_threshold_um, color="black", linestyle="--")
+    if fisher_p is not None:
+        sig_star = "***" if fisher_p < 0.001 else "**" if fisher_p < 0.01 else "*" if fisher_p < 0.05 else "ns"
+        ax_main.set_title(f"{title} (Fisher P = {fisher_p:{fisher_fmt}} {sig_star})")
+    else:
+        ax_main.set_title(title)
+    ax_main.set_xlabel("Distance to Muscle — spot edge (μm)")
+    ax_main.set_ylabel("Distance to Neuron — spot edge (μm)")
+    ax_kde_x.set_xlabel("")
+    ax_kde_x.set_ylabel("Density")
+    ax_kde_y.set_ylabel("")
+    ax_kde_y.set_xlabel("Density")
+
+
 st.set_page_config(page_title="NMJ Pipeline", layout="wide")
 
 st.title("🔬 Single-Image NMJ Pipeline (CZI)")
@@ -582,22 +667,18 @@ if st.button("🚀 Process Pipeline", type="primary"):
             composite_rgb = np.stack([comp_r, comp_g, comp_b], axis=-1)
 
             # Plot Proximity Graph & Images in a perfectly balanced 3x3 grid (9 spots!)
-            fig, axes = plt.subplots(3, 3, figsize=(24, 24))
-            
-            # Row 1: Graphs (Scatter, Size, Circ)
-            ax_scatter = axes[0, 0]
-            ax_size_kde = axes[0, 1]
-            ax_circ_kde = axes[0, 2]
-            
-            # Row 2: Graphs (Overlap, Intensity) + 1st Image (Clean BTX)
-            ax_overlap_kde = axes[1, 0]
-            ax_intensity_kde = axes[1, 1]
-            ax_btx_clean = axes[1, 2]
-            
-            # Row 3: Remaining 3 Images
-            ax_btx_marked = axes[2, 0]
-            ax_comp_marked = axes[2, 1]
-            ax_comp_arrows = axes[2, 2]
+            fig = plt.figure(figsize=(24, 24))
+            outer = fig.add_gridspec(3, 3, hspace=0.35, wspace=0.35)
+
+            ax_scatter, ax_prox_kde_x, ax_prox_kde_y = proximity_joint_axes(fig, outer[0, 0])
+            ax_size_kde = fig.add_subplot(outer[0, 1])
+            ax_circ_kde = fig.add_subplot(outer[0, 2])
+            ax_overlap_kde = fig.add_subplot(outer[1, 0])
+            ax_intensity_kde = fig.add_subplot(outer[1, 1])
+            ax_btx_clean = fig.add_subplot(outer[1, 2])
+            ax_btx_marked = fig.add_subplot(outer[2, 0])
+            ax_comp_marked = fig.add_subplot(outer[2, 1])
+            ax_comp_arrows = fig.add_subplot(outer[2, 2])
             
             
             # Graph 6: Circularity KDE
@@ -649,19 +730,17 @@ if st.button("🚀 Process Pipeline", type="primary"):
             ax_intensity_kde.set_xlabel('Mean Fluorescence Intensity')
             ax_intensity_kde.set_ylabel('Probability Density')
             
-            # Graph 1: Scatter NMJ
-            sns.scatterplot(
-                data=df_spots, x='Dist_to_Muscle_um', y='Dist_to_Neuron_um',
-                hue='BTX signal class', hue_order=BTX_SIGNAL_CLASS_ORDER,
-                palette=BTX_SIGNAL_CLASS_PALETTE, ax=ax_scatter
+            # Graph 1: Scatter NMJ + marginal KDEs
+            draw_proximity_joint(
+                ax_scatter,
+                ax_prox_kde_x,
+                ax_prox_kde_y,
+                df_spots,
+                distance_threshold_um,
+                "1. NMJ Proximity Analysis",
+                fisher_p=fisher_p,
+                fisher_fmt=".4f",
             )
-            ax_scatter.axvline(x=distance_threshold_um, color='black', linestyle='--')
-            ax_scatter.axhline(y=distance_threshold_um, color='black', linestyle='--')
-            
-            sig_star = "***" if fisher_p < 0.001 else "**" if fisher_p < 0.01 else "*" if fisher_p < 0.05 else "ns"
-            ax_scatter.set_title(f'1. NMJ Proximity Analysis (Fisher P = {fisher_p:.4f} {sig_star})')
-            ax_scatter.set_xlabel('Distance to Muscle — spot edge (μm)')
-            ax_scatter.set_ylabel('Distance to Neuron — spot edge (μm)')
 
             # Graph 2: Raw and cleaned BTX shown side-by-side for subtraction verification
             ax_btx_clean.imshow(raw_clean_side_by_side, cmap='gray', vmin=0.0, vmax=1.0)

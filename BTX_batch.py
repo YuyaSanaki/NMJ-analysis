@@ -39,6 +39,91 @@ def normalize_btx_signal_classes(df):
     return out
 
 
+def proximity_joint_axes(fig, outer_cell, hspace=0.08, wspace=0.08):
+    """Main proximity scatter (bottom-left) + KDE on x (top-left) and y (bottom-right)."""
+    inner = outer_cell.subgridspec(
+        2, 2, height_ratios=[1, 4], width_ratios=[4, 1], hspace=hspace, wspace=wspace
+    )
+    ax_kde_x = fig.add_subplot(inner[0, 0])
+    ax_corner = fig.add_subplot(inner[0, 1])
+    ax_corner.axis("off")
+    ax_main = fig.add_subplot(inner[1, 0], sharex=ax_kde_x)
+    ax_kde_y = fig.add_subplot(inner[1, 1], sharey=ax_main)
+    ax_kde_x.tick_params(labelbottom=False)
+    ax_kde_y.tick_params(labelleft=False)
+    return ax_main, ax_kde_x, ax_kde_y
+
+
+def draw_proximity_joint(
+    ax_main,
+    ax_kde_x,
+    ax_kde_y,
+    df,
+    distance_threshold_um,
+    title,
+    *,
+    fisher_p=None,
+    fisher_fmt=".4g",
+    marginal_alpha=0.35,
+    scatter_alpha=0.65,
+    scatter_size=None,
+):
+    """Scatter with marginal KDEs (per class) on muscle (top) and neuron (right) axes."""
+    if df is not None and len(df) > 0:
+        sns.kdeplot(
+            data=df,
+            x="Dist_to_Muscle_um",
+            hue="BTX signal class",
+            hue_order=BTX_SIGNAL_CLASS_ORDER,
+            palette=BTX_SIGNAL_CLASS_PALETTE,
+            ax=ax_kde_x,
+            common_norm=False,
+            fill=True,
+            alpha=marginal_alpha,
+            legend=False,
+            warn_singular=False,
+        )
+        sns.kdeplot(
+            data=df,
+            y="Dist_to_Neuron_um",
+            hue="BTX signal class",
+            hue_order=BTX_SIGNAL_CLASS_ORDER,
+            palette=BTX_SIGNAL_CLASS_PALETTE,
+            ax=ax_kde_y,
+            common_norm=False,
+            fill=True,
+            alpha=marginal_alpha,
+            legend=False,
+            warn_singular=False,
+        )
+    scatter_kw = dict(
+        data=df,
+        x="Dist_to_Muscle_um",
+        y="Dist_to_Neuron_um",
+        hue="BTX signal class",
+        hue_order=BTX_SIGNAL_CLASS_ORDER,
+        palette=BTX_SIGNAL_CLASS_PALETTE,
+        ax=ax_main,
+    )
+    if scatter_size is not None:
+        scatter_kw["s"] = scatter_size
+        scatter_kw["alpha"] = scatter_alpha
+    sns.scatterplot(**scatter_kw)
+    ax_main.axvline(x=distance_threshold_um, color="black", linestyle="--")
+    ax_main.axhline(y=distance_threshold_um, color="black", linestyle="--")
+    if fisher_p is not None:
+        sig_star = "***" if fisher_p < 0.001 else "**" if fisher_p < 0.01 else "*" if fisher_p < 0.05 else "ns"
+        ax_main.set_title(f"{title} (Fisher P = {fisher_p:{fisher_fmt}} {sig_star})")
+    else:
+        ax_main.set_title(title)
+    ax_main.set_xlabel("Distance to Muscle — spot edge (μm)")
+    ax_main.set_ylabel("Distance to Neuron — spot edge (μm)")
+    ax_kde_x.set_xlabel("")
+    ax_kde_x.set_ylabel("Density")
+    ax_kde_y.set_ylabel("")
+    ax_kde_y.set_xlabel("Density")
+
+
 def same_dir(a, b):
     """True if paths refer to the same directory (avoids join/rel vs abs mismatches on Docker/macOS)."""
     return os.path.normpath(os.path.abspath(a)) == os.path.normpath(os.path.abspath(b))
@@ -474,13 +559,14 @@ def save_all_folders_summary_png(master_df, out_png, distance_threshold_um):
     total_orph = int((master_df["BTX signal class"] == "Orphaned").sum())
     _, global_fisher_p = fisher_exact([[total_nmj, total_m_only], [total_n_only, total_orph]])
 
-    fig, axes = plt.subplots(3, 2, figsize=(22, 24))
-    ax_nmj_rate = axes[0, 0]
-    ax_total_spots = axes[0, 1]
-    ax_radius = axes[1, 0]
-    ax_overlap = axes[1, 1]
-    ax_distance = axes[2, 0]
-    ax_proximity = axes[2, 1]
+    fig = plt.figure(figsize=(22, 24))
+    outer = fig.add_gridspec(3, 2, hspace=0.35, wspace=0.35)
+    ax_nmj_rate = fig.add_subplot(outer[0, 0])
+    ax_total_spots = fig.add_subplot(outer[0, 1])
+    ax_radius = fig.add_subplot(outer[1, 0])
+    ax_overlap = fig.add_subplot(outer[1, 1])
+    ax_distance = fig.add_subplot(outer[2, 0])
+    ax_prox_main, ax_prox_kde_x, ax_prox_kde_y = proximity_joint_axes(fig, outer[2, 1])
 
     sns.barplot(data=folder_stats, x="SOURCE_FOLDER", y="nmj_rate_pct", ax=ax_nmj_rate, color="#d62728")
     ax_nmj_rate.set_title("1. NMJ Formation Rate by Folder")
@@ -520,23 +606,18 @@ def save_all_folders_summary_png(master_df, out_png, distance_threshold_um):
     ax_distance.set_xlabel("Median Dist to Muscle (um)")
     ax_distance.set_ylabel("Median Dist to Neuron (um)")
 
-    sns.scatterplot(
-        data=master_df,
-        x="Dist_to_Muscle_um",
-        y="Dist_to_Neuron_um",
-        hue="BTX signal class",
-        hue_order=BTX_SIGNAL_CLASS_ORDER,
-        palette=BTX_SIGNAL_CLASS_PALETTE,
-        alpha=0.35,
-        s=18,
-        ax=ax_proximity,
+    draw_proximity_joint(
+        ax_prox_main,
+        ax_prox_kde_x,
+        ax_prox_kde_y,
+        master_df,
+        distance_threshold_um,
+        "6. All-Folders Proximity",
+        fisher_p=global_fisher_p,
+        fisher_fmt=".4g",
+        scatter_alpha=0.35,
+        scatter_size=18,
     )
-    ax_proximity.axvline(x=distance_threshold_um, color="black", linestyle="--")
-    ax_proximity.axhline(y=distance_threshold_um, color="black", linestyle="--")
-    sig_star = "***" if global_fisher_p < 0.001 else "**" if global_fisher_p < 0.01 else "*" if global_fisher_p < 0.05 else "ns"
-    ax_proximity.set_title(f"6. All-Folders Proximity (Fisher P = {global_fisher_p:.4g} {sig_star})")
-    ax_proximity.set_xlabel("Distance to Muscle — spot edge (um)")
-    ax_proximity.set_ylabel("Distance to Neuron — spot edge (um)")
 
     plt.tight_layout()
     fig.savefig(out_png, bbox_inches="tight")
@@ -970,27 +1051,20 @@ if run_current or run_all:
 
             # Plot proximity graphs and images in a 4x3 grid.
             # Added a dedicated "Cleaned BTX only" panel next to the marked BTX view.
-            fig, axes = plt.subplots(4, 3, figsize=(24, 30))
-            
-            # Row 1: Graphs (Scatter, Size, Circ)
-            ax_scatter = axes[0, 0]
-            ax_size_kde = axes[0, 1]
-            ax_circ_kde = axes[0, 2]
-            
-            # Row 2: Graphs (Overlap, Intensity) + 1st Image (Clean BTX)
-            ax_overlap_kde = axes[1, 0]
-            ax_intensity_kde = axes[1, 1]
-            ax_btx_clean = axes[1, 2]
-            
-            # Row 3: BTX-focused image panels
-            ax_btx_only = axes[2, 0]
-            ax_btx_marked = axes[2, 1]
-            ax_comp_marked = axes[2, 2]
-            
-            # Row 4: Composite summary + spare panels
-            ax_comp_arrows = axes[3, 0]
-            ax_unused_1 = axes[3, 1]
-            ax_unused_2 = axes[3, 2]
+            fig = plt.figure(figsize=(24, 30))
+            outer = fig.add_gridspec(4, 3, hspace=0.35, wspace=0.35)
+            ax_scatter, ax_prox_kde_x, ax_prox_kde_y = proximity_joint_axes(fig, outer[0, 0])
+            ax_size_kde = fig.add_subplot(outer[0, 1])
+            ax_circ_kde = fig.add_subplot(outer[0, 2])
+            ax_overlap_kde = fig.add_subplot(outer[1, 0])
+            ax_intensity_kde = fig.add_subplot(outer[1, 1])
+            ax_btx_clean = fig.add_subplot(outer[1, 2])
+            ax_btx_only = fig.add_subplot(outer[2, 0])
+            ax_btx_marked = fig.add_subplot(outer[2, 1])
+            ax_comp_marked = fig.add_subplot(outer[2, 2])
+            ax_comp_arrows = fig.add_subplot(outer[3, 0])
+            ax_unused_1 = fig.add_subplot(outer[3, 1])
+            ax_unused_2 = fig.add_subplot(outer[3, 2])
             
             
             # Graph 6: Circularity KDE
@@ -1045,19 +1119,16 @@ if run_current or run_all:
             ax_intensity_kde.set_xlabel('Mean Fluorescence Intensity')
             ax_intensity_kde.set_ylabel('Probability Density')
             
-            # Graph 1: Scatter NMJ
-            sns.scatterplot(
-                data=df_spots, x='Dist_to_Muscle_um', y='Dist_to_Neuron_um',
-                hue='BTX signal class', hue_order=BTX_SIGNAL_CLASS_ORDER,
-                palette=BTX_SIGNAL_CLASS_PALETTE, ax=ax_scatter
+            draw_proximity_joint(
+                ax_scatter,
+                ax_prox_kde_x,
+                ax_prox_kde_y,
+                df_spots,
+                distance_threshold_um,
+                "1. NMJ Proximity Analysis",
+                fisher_p=fisher_p,
+                fisher_fmt=".4f",
             )
-            ax_scatter.axvline(x=distance_threshold_um, color='black', linestyle='--')
-            ax_scatter.axhline(y=distance_threshold_um, color='black', linestyle='--')
-            
-            sig_star = "***" if fisher_p < 0.001 else "**" if fisher_p < 0.01 else "*" if fisher_p < 0.05 else "ns"
-            ax_scatter.set_title(f'1. NMJ Proximity Analysis (Fisher P = {fisher_p:.4f} {sig_star})')
-            ax_scatter.set_xlabel('Distance to Muscle — spot edge (μm)')
-            ax_scatter.set_ylabel('Distance to Neuron — spot edge (μm)')
 
             # Graph 2: Raw and cleaned BTX shown side-by-side for subtraction verification
             ax_btx_clean.imshow(raw_clean_side_by_side, cmap='gray', vmin=0.0, vmax=1.0)
@@ -1200,18 +1271,20 @@ if run_current or run_all:
         # Create summary dashboard.
         # For ALL-folder mode, extend to a 10-panel figure with extra comparative analytics.
         if run_all:
-            fig, axes = plt.subplots(5, 2, figsize=(24, 42))
+            fig = plt.figure(figsize=(24, 42))
+            outer = fig.add_gridspec(5, 2, hspace=0.35, wspace=0.35)
         else:
-            fig, axes = plt.subplots(3, 2, figsize=(20, 24))
+            fig = plt.figure(figsize=(20, 24))
+            outer = fig.add_gridspec(3, 2, hspace=0.35, wspace=0.35)
 
-        ax_scatter = axes[0, 0]
-        ax_size_kde = axes[0, 1]
-        ax_circ_kde = axes[1, 0]
-        ax_overlap_kde = axes[1, 1]
-        ax_intensity_kde = axes[2, 0]
-        ax_extra = axes[2, 1]
+        ax_scatter, ax_prox_kde_x, ax_prox_kde_y = proximity_joint_axes(fig, outer[0, 0])
+        ax_size_kde = fig.add_subplot(outer[0, 1])
+        ax_circ_kde = fig.add_subplot(outer[1, 0])
+        ax_overlap_kde = fig.add_subplot(outer[1, 1])
+        ax_intensity_kde = fig.add_subplot(outer[2, 0])
+        ax_extra = fig.add_subplot(outer[2, 1])
 
-        # 1. NMJ Proximity Scatterplot
+        # 1. NMJ Proximity (scatter + marginal KDEs)
         from scipy.stats import fisher_exact
         total_nmj = len(master_df[master_df['BTX signal class'] == 'NMJ'])
         total_m_only = len(master_df[master_df['BTX signal class'] == 'Aneural AChR clusters'])
@@ -1219,18 +1292,16 @@ if run_current or run_all:
         total_orph = len(master_df[master_df['BTX signal class'] == 'Orphaned'])
         _, global_fisher_p = fisher_exact([[total_nmj, total_m_only], [total_n_only, total_orph]])
 
-        sns.scatterplot(
-            data=master_df, x='Dist_to_Muscle_um', y='Dist_to_Neuron_um',
-            hue='BTX signal class', hue_order=BTX_SIGNAL_CLASS_ORDER,
-            palette=BTX_SIGNAL_CLASS_PALETTE, ax=ax_scatter
+        draw_proximity_joint(
+            ax_scatter,
+            ax_prox_kde_x,
+            ax_prox_kde_y,
+            master_df,
+            distance_threshold_um,
+            "1. Global NMJ Proximity Analysis",
+            fisher_p=global_fisher_p,
+            fisher_fmt=".4g",
         )
-        ax_scatter.axvline(x=distance_threshold_um, color='black', linestyle='--')
-        ax_scatter.axhline(y=distance_threshold_um, color='black', linestyle='--')
-
-        sig_star = "***" if global_fisher_p < 0.001 else "**" if global_fisher_p < 0.01 else "*" if global_fisher_p < 0.05 else "ns"
-        ax_scatter.set_title(f'1. Global NMJ Proximity Analysis (Fisher P = {global_fisher_p:.4g} {sig_star})')
-        ax_scatter.set_xlabel('Distance to Muscle — spot edge (μm)')
-        ax_scatter.set_ylabel('Distance to Neuron — spot edge (μm)')
 
         # 2. NMJ Size KDE
         if len(master_df) > 0:
@@ -1301,10 +1372,10 @@ if run_current or run_all:
             ax_extra.axis('off') # Keep same single-folder layout
 
         if run_all:
-            ax_size_overlap = axes[3, 0]
-            ax_forest = axes[3, 1]
-            ax_corr = axes[4, 0]
-            ax_control = axes[4, 1]
+            ax_size_overlap = fig.add_subplot(outer[3, 0])
+            ax_forest = fig.add_subplot(outer[3, 1])
+            ax_corr = fig.add_subplot(outer[4, 0])
+            ax_control = fig.add_subplot(outer[4, 1])
 
             # 7. Spot size vs innervation overlap scatter
             sns.scatterplot(
