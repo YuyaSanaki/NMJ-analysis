@@ -25,6 +25,9 @@ BTX_SIGNAL_CLASS_LEGACY_ALIASES = {
     "Neuron only": "Neuron-associated BTX signal",
 }
 
+MIN_PIXELS_FOR_SHAPE = 20
+RESOLUTION_CLASS_LOWRES_UM_PER_PIXEL = 0.5
+
 
 def normalize_btx_signal_classes(df):
     if df is None or len(df) == 0 or "BTX signal class" not in df.columns:
@@ -349,18 +352,23 @@ def detect_blobs_stable(img_btx_norm, min_diameter_um, max_diameter_um, pixel_si
     if min_sigma_px is None:
         return None, dog_scale, sigma_cap
 
+    # Finer pyramid than skimage default 1.6; DoG response ~∝ (sigma_ratio−1), which blob_dog does not normalize.
+    blob_dog_sigma_ratio = 1.1
+    _sk_default_sigma_ratio = 1.6
+
     threshold_for_dog = float(threshold)
     if dog_scale < 1.0:
         # Downsampling smooths local peaks, so keep DoG sensitivity comparable by
         # reducing threshold slightly in scaled space (with a conservative floor).
         threshold_for_dog *= max(0.6, dog_scale)
+    threshold_for_dog *= (blob_dog_sigma_ratio - 1.0) / (_sk_default_sigma_ratio - 1.0)
+
     blobs = blob_dog(
         img_for_dog,
         min_sigma=min_sigma_px,
         max_sigma=max_sigma_px,
         threshold=threshold_for_dog,
-        # Finer than default 1.6 so the scale pyramid is not too coarse (avoids only 2 discrete radii).
-        sigma_ratio=1.1,
+        sigma_ratio=blob_dog_sigma_ratio,
     )
     if len(blobs) == 0:
         return blobs, dog_scale, sigma_cap
@@ -570,7 +578,8 @@ if st.button("🚀 Process Pipeline", type="primary"):
                 distances_n.append(d_n_um)
                 
                 # --- Morphological & Biological Metrics ---
-                circ = 0.0
+                roundness = np.nan
+                area_px_spot = np.nan
                 mean_intensity = 0.0
                 overlap_ratio = 0.0
                 
@@ -606,12 +615,11 @@ if st.button("🚀 Process Pipeline", type="primary"):
                                 prop = None
                             if prop is not None:
                                 spot_mask = (labeled == spot_label)
-                                # 1. Circularity
-                                perimeter = getattr(prop, "perimeter_crofton", 0.0)
-                                if perimeter > 0:
-                                    circ = (4 * np.pi * prop.area) / (perimeter ** 2)
-                                else:
-                                    circ = 1.0  # 1 or 2 pixels is basically circular
+                                area_px_spot = float(prop.area)
+                                if prop.area > MIN_PIXELS_FOR_SHAPE:
+                                    roundness = float(
+                                        np.clip(1.0 - float(prop.eccentricity), 0.0, 1.0)
+                                    )
 
                                 # 2. Mean Fluorescence Intensity
                                 mean_intensity = float(np.mean(window_btx[spot_mask]))
@@ -629,7 +637,9 @@ if st.button("🚀 Process Pipeline", type="primary"):
                     "POSITION_X": x * pixel_size, # physical um
                     "POSITION_Y": y * pixel_size, # physical um
                     "RADIUS": r * pixel_size, # Spot radius in physical um
-                    "CIRCULARITY": np.clip(circ, 0.0, 1.0),
+                    "CIRCULARITY": roundness,
+                    "ROUNDNESS": roundness,
+                    "AREA_PX": area_px_spot,
                     "MEAN_INTENSITY": mean_intensity,
                     "INNERVATION_OVERLAP_PCT": overlap_ratio,
                     "Dist_to_Muscle_um": d_m_um,
@@ -681,6 +691,11 @@ if st.button("🚀 Process Pipeline", type="primary"):
             
             df_spots['BTX signal class'] = df_spots.apply(classify_quadrant, axis=1)
             df_spots = normalize_btx_signal_classes(df_spots)
+            df_spots["Resolution_Class"] = np.where(
+                float(pixel_size) > RESOLUTION_CLASS_LOWRES_UM_PER_PIXEL,
+                "Low-Res",
+                "High-Res",
+            )
 
             # Save CSV
             out_csv = os.path.join(folder_path, f"{selected_czi.replace('.czi', '')}_analysis.csv")
@@ -736,16 +751,22 @@ if st.button("🚀 Process Pipeline", type="primary"):
             ax_comp_arrows = fig.add_subplot(outer[2, 2])
             
             
-            # Graph 6: Circularity KDE
-            if len(df_spots) > 0:
+            # Graph 6: Roundness KDE (valid shapes only)
+            df_shape = df_spots.dropna(subset=["ROUNDNESS"])
+            if len(df_shape) > 0:
                 sns.kdeplot(
-                    data=df_spots, x='CIRCULARITY', hue='BTX signal class',
+                    data=df_shape,
+                    x="ROUNDNESS",
+                    hue="BTX signal class",
                     hue_order=BTX_SIGNAL_CLASS_ORDER,
-                    palette=BTX_SIGNAL_CLASS_PALETTE, ax=ax_circ_kde,
-                    common_norm=False, fill=True, clip=(0, 1)
+                    palette=BTX_SIGNAL_CLASS_PALETTE,
+                    ax=ax_circ_kde,
+                    common_norm=False,
+                    fill=True,
+                    clip=(0, 1),
                 )
-            ax_circ_kde.set_title('3. NMJ Circularity KDE')
-            ax_circ_kde.set_xlabel('Circularity (1 = Perfect Circle)')
+            ax_circ_kde.set_title("3. NMJ Roundness KDE (1 − eccentricity)")
+            ax_circ_kde.set_xlabel("Roundness (1 = circle)")
             ax_circ_kde.set_ylabel('Probability Density')
             ax_circ_kde.set_xlim(0, 1)
             
