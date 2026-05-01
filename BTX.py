@@ -394,19 +394,21 @@ def estimate_auto_threshold(img_btx_norm, sensitivity="Conservative"):
 
     sensitivity="Conservative"  →  median + 7×MAD, clip [0.02, 0.12]
         Stays well above the noise floor; fewer but more reliable spots.
-    sensitivity="High"          →  median × 0.4,   clip [0.03, 0.08]
-        More permissive; picks up dimmer spots but increases false positives.
+    sensitivity="High"          →  median + 3×MAD, clip [0.02, 0.12]
+        Detects statistically significant spots at a lower sigma cutoff.
     """
     sample = np.asarray(img_btx_norm, dtype=np.float32)[::4, ::4].ravel()
     if sample.size == 0:
         return 0.05
 
     if sensitivity == "High":
-        pos = sample[sample > 0.02]
+        pos = sample[sample > 0.005]
         if pos.size < 50:
             return 0.05
-        signal_median = float(np.median(pos))
-        return float(np.clip(signal_median * 0.4, 0.03, 0.08))
+        median = float(np.median(pos))
+        mad = float(np.median(np.abs(pos - median)))
+        std_est = 1.4826 * mad
+        return float(np.clip(median + 3.0 * std_est, 0.02, 0.12))
     else:  # Conservative
         pos = sample[sample > 0.005]
         if pos.size < 50:
@@ -464,7 +466,7 @@ with col_p1:
         index=0,
         horizontal=True,
         disabled=not auto_threshold,
-        help="Conservative: median + 7×MAD (fewer, reliable spots). High: median × 0.4 (more spots, higher false-positive rate).",
+        help="Conservative: median + 7×MAD (fewer, reliable spots). High: median + 3×MAD (more spots, lower sigma cutoff).",
     )
     threshold = st.number_input("Detection Threshold", value=0.05, step=0.01, disabled=auto_threshold)
     

@@ -635,19 +635,21 @@ def estimate_auto_threshold(img_btx_norm, sensitivity="Conservative"):
 
     sensitivity="Conservative"  →  median + 7×MAD, clip [0.02, 0.12]
         Stays well above the noise floor; fewer but more reliable spots.
-    sensitivity="High"          →  median × 0.4,   clip [0.03, 0.08]
-        More permissive; picks up dimmer spots but increases false positives.
+    sensitivity="High"          →  median + 3×MAD, clip [0.02, 0.12]
+        Detects statistically significant spots at a lower sigma cutoff.
     """
     sample = np.asarray(img_btx_norm, dtype=np.float32)[::4, ::4].ravel()
     if sample.size == 0:
         return 0.05
 
     if sensitivity == "High":
-        pos = sample[sample > 0.02]
+        pos = sample[sample > 0.005]
         if pos.size < 50:
             return 0.05
-        signal_median = float(np.median(pos))
-        return float(np.clip(signal_median * 0.4, 0.03, 0.08))
+        median = float(np.median(pos))
+        mad = float(np.median(np.abs(pos - median)))
+        std_est = 1.4826 * mad
+        return float(np.clip(median + 3.0 * std_est, 0.02, 0.12))
     else:  # Conservative
         pos = sample[sample > 0.005]
         if pos.size < 50:
@@ -780,7 +782,7 @@ with col_p1:
         index=0,
         horizontal=True,
         disabled=not auto_threshold,
-        help="Conservative: median + 7×MAD (fewer, reliable spots). High: median × 0.4 (more spots, higher false-positive rate).",
+        help="Conservative: median + 7×MAD (fewer, reliable spots). High: median + 3×MAD (more spots, lower sigma cutoff).",
     )
     threshold = st.number_input("Detection Threshold", value=0.05, step=0.01, disabled=auto_threshold)
     
@@ -1156,7 +1158,7 @@ if run_current or run_all:
             dens_n = (c_n_only / area_n_um2 * 1000) if area_n_um2 > 0 else 0.0
             dens_o = (c_orphan / area_o_um2 * 1000) if area_o_um2 > 0 else 0.0
 
-            out_csv = os.path.join(current_d, f"{czi_file.replace('.czi', '')}_analysis.csv")
+            out_csv = os.path.join(current_d, f"{czi_file.replace('.czi', '')}{_thr_tag}_analysis.csv")
             df_spots.to_csv(out_csv, index=False)
 
             # Tag source file and stream to master CSV to avoid RAM blow-up on large all-folder runs
@@ -1396,7 +1398,7 @@ if run_current or run_all:
                                       arrowprops=dict(arrowstyle="-|>", color='white', lw=1.5))
 
             # Save visual directly to disk, completely bypassing the Streamlit frontend DOM to prevent DOM payload crash
-            out_img = os.path.join(current_d, f"{czi_file.replace('.czi', '')}_NMJ_Plot.png")
+            out_img = os.path.join(current_d, f"{czi_file.replace('.czi', '')}{_thr_tag}_NMJ_Plot.png")
             fig.savefig(out_img, bbox_inches='tight')
             plt.close(fig) # Prevent Matplotlib from leaking memory during large batches!
             
