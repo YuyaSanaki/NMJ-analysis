@@ -824,16 +824,20 @@ if run_current or run_all:
     # so per-image *_analysis.csv / *_NMJ_Plot.png never appeared next to the files the user was checking.
     all_target_czis = collect_czi_jobs(target_dirs)
 
+    # Embed the sensitivity mode in output filenames so Conservative and High runs
+    # save to separate files and neither overwrites the other.
+    _thr_tag = f"_thr{auto_thr_sensitivity}" if auto_threshold else ""
+
     if run_all:
         # Aggregate artifacts for "ALL Folders" live at project root (same as base_dir / Docker WORKDIR)
         # so they are easy to find alongside the batch app, not inside the selected dataset subfolder.
         all_folders_dir = os.path.abspath(base_dir)
-        master_csv = os.path.join(all_folders_dir, "ALL_FOLDERS_MASTER_RESULTS.csv")
-        master_png = os.path.join(all_folders_dir, "ALL_FOLDERS_SUMMARY.png")
-        summary_table_csv = os.path.join(all_folders_dir, "ALL_FOLDERS_SUMMARY_TABLE.csv")
+        master_csv = os.path.join(all_folders_dir, f"ALL_FOLDERS_MASTER_RESULTS{_thr_tag}.csv")
+        master_png = os.path.join(all_folders_dir, f"ALL_FOLDERS_SUMMARY{_thr_tag}.png")
+        summary_table_csv = os.path.join(all_folders_dir, f"ALL_FOLDERS_SUMMARY_TABLE{_thr_tag}.csv")
     else:
-        master_csv = os.path.join(folder_path, "BATCH_MASTER_RESULTS.csv")
-        master_png = os.path.join(folder_path, "BATCH_SUMMARY.png")
+        master_csv = os.path.join(folder_path, f"BATCH_MASTER_RESULTS{_thr_tag}.csv")
+        master_png = os.path.join(folder_path, f"BATCH_SUMMARY{_thr_tag}.png")
         summary_table_csv = None
 
     # Start fresh for this run so append-mode streaming does not duplicate previous runs.
