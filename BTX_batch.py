@@ -599,23 +599,17 @@ def detect_blobs_stable(img_btx_norm, min_diameter_um, max_diameter_um, pixel_si
     if min_sigma_px is None:
         return None, dog_scale, sigma_cap
 
-    # Finer pyramid than skimage default 1.6; DoG response ~∝ (sigma_ratio−1), which blob_dog does not normalize.
-    blob_dog_sigma_ratio = 1.1
-    _sk_default_sigma_ratio = 1.6
-
     threshold_for_dog = float(threshold)
     if dog_scale < 1.0:
         # Downsampling smooths local peaks, so keep DoG sensitivity comparable by
         # reducing threshold slightly in scaled space (with a conservative floor).
         threshold_for_dog *= max(0.6, dog_scale)
-    threshold_for_dog *= (blob_dog_sigma_ratio - 1.0) / (_sk_default_sigma_ratio - 1.0)
 
     blobs = blob_dog(
         img_for_dog,
         min_sigma=min_sigma_px,
         max_sigma=max_sigma_px,
         threshold=threshold_for_dog,
-        sigma_ratio=blob_dog_sigma_ratio,
     )
     if len(blobs) == 0:
         return blobs, dog_scale, sigma_cap
@@ -635,28 +629,33 @@ def detect_blobs_stable(img_btx_norm, min_diameter_um, max_diameter_um, pixel_si
     return blobs, dog_scale, sigma_cap
 
 
-def estimate_auto_threshold(img_btx_norm):
+def estimate_auto_threshold(img_btx_norm, sensitivity="Conservative"):
     """
-    Stabilized thresholding.
-    Uses the Median of the positive signals to ensure we stay above the noise floor
-    while still being sensitive to varied intensities.
+    Compute an auto DoG threshold from a normalised BTX image.
+
+    sensitivity="Conservative"  →  median + 7×MAD, clip [0.02, 0.12]
+        Stays well above the noise floor; fewer but more reliable spots.
+    sensitivity="High"          →  median × 0.4,   clip [0.03, 0.08]
+        More permissive; picks up dimmer spots but increases false positives.
     """
     sample = np.asarray(img_btx_norm, dtype=np.float32)[::4, ::4].ravel()
-    # Increase floor from 0.01 to 0.02 to ignore very faint noise immediately
-    pos = sample[sample > 0.02]
+    if sample.size == 0:
+        return 0.05
 
-    if pos.size < 50:
-        return 0.05  # Standard fallback
-
-    # Instead of the 10th percentile (which was too low/sensitive),
-    # let's use the Median (50th percentile) and take a fraction of it.
-    # This is a 'Top-Half' logic: It looks at the average brightness of
-    # visible spots and sets the threshold at 40% of that value.
-    signal_median = float(np.median(pos))
-    auto_thr = signal_median * 0.4
-
-    # Clip between 0.03 (loose) and 0.08 (strict)
-    return float(np.clip(auto_thr, 0.03, 0.08))
+    if sensitivity == "High":
+        pos = sample[sample > 0.02]
+        if pos.size < 50:
+            return 0.05
+        signal_median = float(np.median(pos))
+        return float(np.clip(signal_median * 0.4, 0.03, 0.08))
+    else:  # Conservative
+        pos = sample[sample > 0.005]
+        if pos.size < 50:
+            return 0.05
+        median = float(np.median(pos))
+        mad = float(np.median(np.abs(pos - median)))
+        std_est = 1.4826 * mad
+        return float(np.clip(median + 7.0 * std_est, 0.02, 0.12))
 
 
 def save_all_folders_summary_png(master_df, out_png, distance_threshold_um):
@@ -774,6 +773,14 @@ with col_p1:
         "Auto Threshold per image",
         value=False,
         help="Adapts DoG threshold from each image's BTX signal/noise profile.",
+    )
+    auto_thr_sensitivity = st.radio(
+        "Auto Threshold Sensitivity",
+        options=["Conservative", "High"],
+        index=0,
+        horizontal=True,
+        disabled=not auto_threshold,
+        help="Conservative: median + 7×MAD (fewer, reliable spots). High: median × 0.4 (more spots, higher false-positive rate).",
     )
     threshold = st.number_input("Detection Threshold", value=0.05, step=0.01, disabled=auto_threshold)
     
@@ -913,7 +920,7 @@ if run_current or run_all:
             if p_high <= 0:
                 p_high = 1e-5
             img_btx_norm = np.clip(img_btx.astype(np.float32, copy=False) / p_high, 0.0, 1.0)
-            threshold_used = estimate_auto_threshold(img_btx_norm) if auto_threshold else float(threshold)
+            threshold_used = estimate_auto_threshold(img_btx_norm, sensitivity=auto_thr_sensitivity) if auto_threshold else float(threshold)
             if auto_threshold:
                 st.caption(f"{czi_file}: Detection threshold used `{threshold_used:.4f}`")
             blobs, dog_scale, sigma_cap = detect_blobs_stable(
@@ -1237,14 +1244,16 @@ if run_current or run_all:
             ax_unused_2 = fig.add_subplot(outer[3, 2])
             
             
-            # Graph 6: Roundness KDE (valid shapes only; tiny masks excluded)
+            # Graph 6: Roundness KDE (valid shapes only; tiny masks and Orphaned excluded)
+            _roundness_order = [c for c in BTX_SIGNAL_CLASS_ORDER if c != "Orphaned"]
             df_shape = df_spots.dropna(subset=["ROUNDNESS"])
+            df_shape = df_shape[df_shape["BTX signal class"] != "Orphaned"]
             if len(df_shape) > 0:
                 sns.kdeplot(
                     data=df_shape,
                     x="ROUNDNESS",
                     hue="BTX signal class",
-                    hue_order=BTX_SIGNAL_CLASS_ORDER,
+                    hue_order=_roundness_order,
                     palette=BTX_SIGNAL_CLASS_PALETTE,
                     ax=ax_circ_kde,
                     common_norm=False,
@@ -1270,13 +1279,12 @@ if run_current or run_all:
             ax_size_kde.set_xlabel('Radius (μm)')
             ax_size_kde.set_ylabel('Probability Density')
             
-            # Graph 8: NMJ Innervation Histogram (Bar Graph)
-            if len(df_spots) > 0:
+            # Graph 8: NMJ Innervation Histogram (NMJ class only)
+            df_innervation_img = df_spots[df_spots["BTX signal class"] == "NMJ"] if len(df_spots) > 0 else df_spots
+            if len(df_innervation_img) > 0:
                 sns.histplot(
-                    data=df_spots, x='INNERVATION_OVERLAP_PCT', hue='BTX signal class',
-                    hue_order=BTX_SIGNAL_CLASS_ORDER,
-                    palette=BTX_SIGNAL_CLASS_PALETTE, ax=ax_overlap_kde,
-                    common_norm=False, multiple="layer"
+                    data=df_innervation_img, x='INNERVATION_OVERLAP_PCT',
+                    color=BTX_SIGNAL_CLASS_PALETTE["NMJ"], ax=ax_overlap_kde,
                 )
             ax_overlap_kde.set_title('4. NMJ Innervation Distribution')
             ax_overlap_kde.set_xlabel('NMJ Innervation (%)')
@@ -1525,14 +1533,16 @@ if run_current or run_all:
         ax_size_kde.set_xlabel('Radius (μm)')
         ax_size_kde.set_ylabel('Probability Density')
 
-        # 3. Roundness KDE (spots with enough pixels for a stable moment-based shape)
+        # 3. Roundness KDE (spots with enough pixels for a stable moment-based shape; Orphaned excluded)
+        _roundness_order_global = [c for c in BTX_SIGNAL_CLASS_ORDER if c != "Orphaned"]
         master_shape = master_df.dropna(subset=["ROUNDNESS"])
+        master_shape = master_shape[master_shape["BTX signal class"] != "Orphaned"]
         if len(master_shape) > 0:
             sns.kdeplot(
                 data=master_shape,
                 x="ROUNDNESS",
                 hue="BTX signal class",
-                hue_order=BTX_SIGNAL_CLASS_ORDER,
+                hue_order=_roundness_order_global,
                 palette=BTX_SIGNAL_CLASS_PALETTE,
                 ax=ax_circ_kde,
                 common_norm=False,
@@ -1545,13 +1555,12 @@ if run_current or run_all:
         ax_circ_kde.set_ylabel('Probability Density')
         ax_circ_kde.set_xlim(0, 1)
 
-        # 4. Innervation Histogram
-        if len(master_df) > 0:
+        # 4. Innervation Histogram (NMJ class only)
+        master_innervation = master_df[master_df["BTX signal class"] == "NMJ"] if len(master_df) > 0 else master_df
+        if len(master_innervation) > 0:
             sns.histplot(
-                data=master_df, x='INNERVATION_OVERLAP_PCT', hue='BTX signal class',
-                hue_order=BTX_SIGNAL_CLASS_ORDER,
-                palette=BTX_SIGNAL_CLASS_PALETTE, ax=ax_overlap_kde,
-                common_norm=False, multiple="layer"
+                data=master_innervation, x='INNERVATION_OVERLAP_PCT',
+                color=BTX_SIGNAL_CLASS_PALETTE["NMJ"], ax=ax_overlap_kde,
             )
         ax_overlap_kde.set_title('4. Global NMJ Innervation Distribution')
         ax_overlap_kde.set_xlabel('NMJ Innervation (%)')

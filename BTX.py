@@ -388,28 +388,33 @@ def detect_blobs_stable(img_btx_norm, min_diameter_um, max_diameter_um, pixel_si
     return blobs, dog_scale, sigma_cap
 
 
-def estimate_auto_threshold(img_btx_norm):
+def estimate_auto_threshold(img_btx_norm, sensitivity="Conservative"):
     """
-    Stabilized thresholding.
-    Uses the Median of the positive signals to ensure we stay above the noise floor
-    while still being sensitive to varied intensities.
+    Compute an auto DoG threshold from a normalised BTX image.
+
+    sensitivity="Conservative"  →  median + 7×MAD, clip [0.02, 0.12]
+        Stays well above the noise floor; fewer but more reliable spots.
+    sensitivity="High"          →  median × 0.4,   clip [0.03, 0.08]
+        More permissive; picks up dimmer spots but increases false positives.
     """
     sample = np.asarray(img_btx_norm, dtype=np.float32)[::4, ::4].ravel()
-    # Increase floor from 0.01 to 0.02 to ignore very faint noise immediately
-    pos = sample[sample > 0.02]
+    if sample.size == 0:
+        return 0.05
 
-    if pos.size < 50:
-        return 0.05  # Standard fallback
-
-    # Instead of the 10th percentile (which was too low/sensitive),
-    # let's use the Median (50th percentile) and take a fraction of it.
-    # This is a 'Top-Half' logic: It looks at the average brightness of
-    # visible spots and sets the threshold at 40% of that value.
-    signal_median = float(np.median(pos))
-    auto_thr = signal_median * 0.4
-
-    # Clip between 0.03 (loose) and 0.08 (strict)
-    return float(np.clip(auto_thr, 0.03, 0.08))
+    if sensitivity == "High":
+        pos = sample[sample > 0.02]
+        if pos.size < 50:
+            return 0.05
+        signal_median = float(np.median(pos))
+        return float(np.clip(signal_median * 0.4, 0.03, 0.08))
+    else:  # Conservative
+        pos = sample[sample > 0.005]
+        if pos.size < 50:
+            return 0.05
+        median = float(np.median(pos))
+        mad = float(np.median(np.abs(pos - median)))
+        std_est = 1.4826 * mad
+        return float(np.clip(median + 7.0 * std_est, 0.02, 0.12))
 
 with st.spinner("Loading CZI..."):
     try:
@@ -453,6 +458,14 @@ with col_p1:
         value=False,
         help="Adapts DoG threshold from each image's BTX signal/noise profile.",
     )
+    auto_thr_sensitivity = st.radio(
+        "Auto Threshold Sensitivity",
+        options=["Conservative", "High"],
+        index=0,
+        horizontal=True,
+        disabled=not auto_threshold,
+        help="Conservative: median + 7×MAD (fewer, reliable spots). High: median × 0.4 (more spots, higher false-positive rate).",
+    )
     threshold = st.number_input("Detection Threshold", value=0.05, step=0.01, disabled=auto_threshold)
     
     auto_bg = st.checkbox("Auto-Optimize Background Radius", value=True, help="Uses a physical-radius model (µm) and converts to pixels per image.")
@@ -488,7 +501,7 @@ if st.button("🚀 Process Pipeline", type="primary"):
             if p_high <= 0:
                 p_high = 1e-5
             img_btx_norm = np.clip(img_btx.astype(np.float32, copy=False) / p_high, 0.0, 1.0)
-            threshold_used = estimate_auto_threshold(img_btx_norm) if auto_threshold else float(threshold)
+            threshold_used = estimate_auto_threshold(img_btx_norm, sensitivity=auto_thr_sensitivity) if auto_threshold else float(threshold)
             st.caption(f"Detection threshold used: `{threshold_used:.4f}`")
 
             blobs, dog_scale, sigma_cap = detect_blobs_stable(

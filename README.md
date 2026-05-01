@@ -1,34 +1,54 @@
 # Neuromuscular Junction (NMJ) Analysis Pipeline
 
-A fully containerized image analysis toolkit that detects, measures, and classifies Neuromuscular Junctions (NMJs) from multi-channel confocal `.czi` files—intended as a streamlined alternative to FIJI / TrackMate-heavy workflows.
+A fully containerized image analysis toolkit that detects, measures, and classifies Neuromuscular Junctions (NMJs) from multi-channel confocal `.czi` files.
+
+`.czi`  file should have 1. muscle staining channel, 2. neuron staining channel, and 3. alpha-bungarotoxin staining channel. Image can have extra channel but not be used in this pipeline. Strongly recommend to take high resolution image with high maginification lens (Bit: 16, Image size: >2000x2000, Lens: >40x, Z-stack image). Z-stack will convert to max projection inside the pipeline.
+
+Intended as a streamlined alternative to FIJI / TrackMate-heavy workflows.
 
 ## System Architecture
 
 The app runs in Docker with **Streamlit** UIs. **Single-image** and **batch** are separate Compose **profiles**: you start **one** service at a time so only **one** process and **one** port are active, and the configured **memory limit** applies to that container (helpful for large tiles and deep Z-stacks).
 
-| Profile | Command | App |
-|--------|---------|-----|
-| `single` | `docker compose --profile single up --build` | `BTX.py` — one `.czi`, tune detection and thresholds |
-| `batch` | `docker compose --profile batch up --build` | `BTX_batch.py` — whole folders, JSON configs, per-file mapping |
 
-**URL (both modes):** `http://localhost:8501`
 
 Plain `docker compose up` with **no** `--profile` does not start either app (by design).
 
 ## Quick Start
 
-1. **Start one pipeline** (examples above). Add `-d` to run in the background.
-2. Open **`http://localhost:8501`** in the browser.
-3. **Data:** Put `.czi` files in subfolders under this project. The compose file bind-mounts the repo to `/app` inside the container.
-4. **Stop:** `Ctrl+C` in the terminal, or from another shell:
+1. **Data:** Put `.czi` files in subfolders under this project. e.g. `/Users/username/NMJanalysis/Experiment1/image.czi`. The compose file bind-mounts the repo to `/app` inside the container.
+2. **Start one pipeline** Open terminal and
+```bash
+   cd /Users/username/NMJanalysis/Experiment1/
+
+   docker compose --profile single up --build
+   # or
+   docker compose --profile batch up --build
+   ```
+   Keep the terminal window open during your analysis and use the terminal window for the rest of the commands.
+3. Open **`http://localhost:8501`** in the browser.
+4. Set up analysis configurations in the browser.
+
+      **Channel Setup:** Assign the muscle, nerve, and BTX imaging channels for each dataset folder. (Note: The pixel size will be detected automatically).
+
+      **Spot Detection:** Configure your spot detection parameters. The default NMJ spot size range is 5–12 µm. It is highly recommended to enable Auto Threshold per image and Auto-Optimize Background Subtraction Radius.
+
+      **Validation Plots:** Enabling the option to save per-image NMJ plot PNGs during batch processing will consume additional memory, but it generates a valuable validation plot for every individual image.
+
+      **EDT Threshold:** If the muscle or nerve staining appears faint, increase the EDT threshold. Because this adjustment can introduce artifacts, be sure to review the per-image NMJ plots to verify your results.
+      
+      **NMJ Logic:** This setting defines the acceptable distance from the BTX signal to assume that the BTX staining is correctly associated with the surrounding proximity tissues (i.e., the muscle and nerve).
+
+      **The output** will be saved in `/Users/username/NMJanalysis/Experiment1/` and/or `/Users/username/NMJanalysis/`.
+ 
+
+
+5. **Stop:** `Ctrl+C` in the terminal, or 
 
    ```bash
-   docker compose --profile single down
-   # or
-   docker compose --profile batch down
+   docker compose down
    ```
 
-5. **Switch modes:** bring the running stack down, then start the other profile.
 
 ## Docker Memory
 
@@ -42,6 +62,10 @@ For very long batch runs, use the **"Save per-image NMJ_Plot PNGs"** option wise
 
 ### 1. Robust spot detection (Difference of Gaussians)
 
+The pipeline subtracts broad diffuse background from the BTX channel using a large-sigma Gaussian blur. A smoothed background image is computed with σ = max(50 µm, 5 × max spot diameter), which is well above the largest expected cluster, and then subtracted from the raw image. This removes wide haze and muscle auto-fluorescence while preserving sharp puncta, and avoids the "donut" hollowing artifact that occurs when the background kernel is too close in size to the signal.
+
+![Background subtraction](backgroundsubtraction.png)
+
 The pipeline uses skimage's `blob_dog` on the BTX (receptor) channel. A **morphological white top-hat** (rolling-ball–style background suppression) runs first when enabled.
 
 Spot size in the UI is expressed as **diameter in μm** (min / max). Internally, diameters are converted to Gaussian sigmas for DoG:
@@ -50,7 +74,7 @@ Spot size in the UI is expressed as **diameter in μm** (min / max). Internally,
 sigma_um = diameter_um / (2 × sqrt(2))
 ```
 
-**Auto DoG threshold:** `estimate_dog_threshold()` computes the median of positive pixel values (> 0.02) in a subsampled BTX image and applies a `× 0.4` factor, clamped between `0.03` and `0.08`. This "top-half" approach adapts to varied image brightness without an explicit per-image slider.
+**Auto DoG threshold:** `estimate_auto_threshold()` computes `median + 7 × MAD` on positive pixel values (> 0.005) in a subsampled, haze-subtracted BTX image, clamped to `[0.02, 0.12]`. Using the robust MAD estimator keeps the threshold well above the noise floor while adapting to image brightness, avoiding false-positive detections on dim background.
 
 ### 2. Physical units (μm)
 
@@ -101,13 +125,47 @@ Each detected spot is assigned one of four classes based on its edge-corrected d
 
 "Near" is defined by the **Functional NMJ Boundary (μm)** slider (default `1.0 µm`), applied to edge-corrected distances.
 
-**Legacy label aliasing:** result CSVs written with older terminology (`"Muscle Only"`, `"Neuron Only"`, etc.) are silently renamed to the current terms when loaded, so older data files plot correctly alongside new ones.
 
 ### 6. Statistical tests
 
-**Fisher's Exact Test (proximity):** For each image (and globally across a batch run), a 2×2 contingency table is built from the four spot classes and Fisher's Exact Test is computed. The p-value and significance star (`***` / `**` / `*` / `ns`) appear in the proximity scatter plot title.
+All p-values are annotated with significance stars: `***` p < 0.001 · `**` p < 0.01 · `*` p < 0.05 · `ns` p ≥ 0.05.
 
-**Paired Wilcoxon test (intensity):** Median `MEAN_INTENSITY` is computed per `SOURCE_IMAGE` for NMJ and Orphaned spots. A one-sided paired Wilcoxon signed-rank test (`alternative="greater"`) tests whether NMJ intensity is higher than Orphaned intensity. The result appears in the intensity KDE panel title (Panel 5 of the 9-panel figure).
+---
+
+**Fisher's Exact Test (proximity) — Panel 1**
+
+*What it asks:* Is proximity to the nerve statistically associated with proximity to the muscle (i.e., is co-localisation with both tissues non-random)?
+
+*How it works:* Each BTX spot is placed into one of four quadrants based on whether it is "near" (≤ NMJ boundary µm) the muscle and/or nerve. This yields a 2×2 contingency table:
+
+|  | Near Muscle | Far from Muscle |
+|---|---|---|
+| **Near Nerve** | NMJ | Neuron-associated |
+| **Far from Nerve** | Aneural AChR clusters | Orphaned |
+
+Fisher's Exact Test (`scipy.stats.fisher_exact`, two-sided) tests whether the row and column proportions are independent. A significant result means that nerve proximity and muscle proximity co-occur more (or less) than chance — confirming that BTX spots truly co-localise with intact NMJs rather than being random background.
+
+The p-value and star appear in the **Panel 1 – Proximity Scatter** title for every individual image and in the global all-folders summary.
+
+---
+
+**Paired Wilcoxon Signed-Rank Test (receptor intensity) — Panel 5**
+
+*What it asks:* Are NMJ spots systematically brighter than orphaned (background) spots across images?
+
+*How it works:* For each `SOURCE_IMAGE`, the median `MEAN_INTENSITY` is computed separately for NMJ spots and Orphaned spots. This gives one paired observation per image. A one-sided Wilcoxon signed-rank test (`alternative="greater"`, `zero_method="wilcox"`) then asks whether the NMJ median is consistently higher than the Orphaned median across all images. Because the test ranks differences rather than using raw values, it is robust to non-normal intensity distributions and does not assume equal variance. At least 3 paired images are required; fewer will show "Insufficient Pairs".
+
+The p-value and star appear in the **Panel 5 – Receptor Intensity KDE** title (e.g. `Wilcoxon P = 0.0031 **`). 
+
+---
+
+**Friedman Test (BTX zone specificity) — Panel 6**
+
+*What it asks:* Does BTX spot density differ significantly across the three tissue zones (muscle zone, neuron-only zone, and orphan zone) when compared within the same image?
+
+*How it works:* For each image, spots are counted in each zone and divided by the zone's area (µm²) to give an area-normalised density. This produces three matched columns across images (one row = one image, three columns = three zone densities). The Friedman test (`scipy.stats.friedmanchisquare`) is a non-parametric equivalent of a repeated-measures ANOVA that ranks the three densities within each image and tests whether any zone is consistently ranked higher. Because each image serves as its own block (control), between-image variability in overall BTX signal strength is cancelled out, leaving only the within-image zone preference.
+
+A significant result confirms that BTX staining is not uniformly distributed across the zones — it is specifically enriched near muscle and nerve tissue, validating the biological specificity of the staining. The p-value and star appear in the **Panel 6 – BTX Enrichment** boxplot title.
 
 ---
 
