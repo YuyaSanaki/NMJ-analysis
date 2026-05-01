@@ -74,7 +74,7 @@ Spot size in the UI is expressed as **diameter in μm** (min / max). Internally,
 sigma_um = diameter_um / (2 × sqrt(2))
 ```
 
-**Auto DoG threshold:** `estimate_auto_threshold()` computes `median + 7 × MAD` on positive pixel values (> 0.005) in a subsampled, haze-subtracted BTX image, clamped to `[0.02, 0.12]`. Using the robust MAD estimator keeps the threshold well above the noise floor while adapting to image brightness, avoiding false-positive detections on dim background.
+**Auto DoG threshold:** `estimate_auto_threshold()` computes `median + k × MAD` on positive pixel values (> 0.005) in a subsampled, haze-subtracted BTX image, clamped to `[0.02, 0.12]`. The multiplier `k` is set by the **Auto Threshold Sensitivity** radio button: `k = 3` (Conservative, balanced) or `k = 1` (High, most sensitive). The MAD-based estimator scales with image noise, keeping the threshold above the background floor regardless of absolute brightness.
 
 ### 2. Physical units (μm)
 
@@ -132,30 +132,35 @@ All p-values are annotated with significance stars: `***` p < 0.001 · `**` p < 
 
 ---
 
-**Fisher's Exact Test (proximity) — Panel 1**
+**Synaptic docking precision (Mann–Whitney U) — Panel 1**
 
-*What it asks:* Is proximity to the nerve statistically associated with proximity to the muscle (i.e., is co-localisation with both tissues non-random)?
+*What it asks:* Among spots that are near muscle, do true NMJs (also near the neuron channel) sit **closer to the neuron mask** than muscle-only “Aneural AChR clusters”? That is a direct readout of tighter synaptic docking in physical micrometers.
 
-*How it works:* Each BTX spot is placed into one of four quadrants based on whether it is "near" (≤ NMJ boundary µm) the muscle and/or nerve. This yields a 2×2 contingency table:
+*How it works:* Edge distances `Dist_to_Neuron_um` (already stored per spot) are compared between the **NMJ** class and the **Aneural AChR clusters** class. A one-sided Mann–Whitney U test (`scipy.stats.mannwhitneyu`, `alternative="less"`) asks whether NMJ distances are stochastically **smaller** than aneural distances. At least 3 spots per group are required; fewer images show “Insufficient clusters” in the panel title.
 
-|  | Near Muscle | Far from Muscle |
-|---|---|---|
-| **Near Nerve** | NMJ | Neuron-associated |
-| **Far from Nerve** | Aneural AChR clusters | Orphaned |
+Spots within one field of view are not statistically independent; treat the p-value as **exploratory** unless you aggregate appropriately (e.g. per-image effect sizes or hierarchical models).
 
-Fisher's Exact Test (`scipy.stats.fisher_exact`, two-sided) tests whether the row and column proportions are independent. A significant result means that nerve proximity and muscle proximity co-occur more (or less) than chance — confirming that BTX spots truly co-localise with intact NMJs rather than being random background.
-
-The p-value and star appear in the **Panel 1 – Proximity Scatter** title for every individual image and in the global all-folders summary.
+The p-value, stars, and group medians appear in the **Panel 1 – Proximity Scatter** title for every individual image, and the same logic applies to the global all-spots summary when Panel 1 pools many images.
 
 ---
 
-**Paired Wilcoxon Signed-Rank Test (receptor intensity) — Panel 5**
+**Mann-Whitney U Test (receptor intensity) — Panel 5**
 
-*What it asks:* Are NMJ spots systematically brighter than orphaned (background) spots across images?
+*What it asks:* Are **NMJ** spots brighter than **Orphaned** spots when all detected spots are pooled?
 
-*How it works:* For each `SOURCE_IMAGE`, the median `MEAN_INTENSITY` is computed separately for NMJ spots and Orphaned spots. This gives one paired observation per image. A one-sided Wilcoxon signed-rank test (`alternative="greater"`, `zero_method="wilcox"`) then asks whether the NMJ median is consistently higher than the Orphaned median across all images. Because the test ranks differences rather than using raw values, it is robust to non-normal intensity distributions and does not assume equal variance. At least 3 paired images are required; fewer will show "Insufficient Pairs".
+*How it works:* All `MEAN_INTENSITY` values are pooled by class, then NMJ is compared against Orphaned spots using one-sided Mann-Whitney U (`scipy.stats.mannwhitneyu`, `alternative="greater"`). This directly tests whether the NMJ intensity distribution is shifted to higher values than the orphaned/background control distribution, without reducing each image to a median first. At least 3 spots per class are required; otherwise the panel reports "Insufficient Clusters".
 
-The p-value and star appear in the **Panel 5 – Receptor Intensity KDE** title (e.g. `Wilcoxon P = 0.0031 **`). 
+The p-value, significance star, and class medians appear in the **Panel 5 – Receptor Intensity KDE** title (e.g. `Mann-Whitney P = 0.0031 **`). 
+
+---
+
+**Kruskal-Wallis Test (roundness morphology) — Panel 3**
+
+*What it asks:* Does receptor-cluster morphology differ across the three biologically relevant environments: **NMJ**, **Aneural AChR clusters**, and **Neuron-associated BTX signal**?
+
+*How it works:* `ROUNDNESS` is compared across the three groups using a 3-way Kruskal-Wallis H-test (`scipy.stats.kruskal`). Quality control matches the plotting logic: only spots with `AREA_PX >= MIN_PIXELS_FOR_SHAPE` and non-null `ROUNDNESS` are included; Orphaned spots are excluded from this 3-way morphology test. At least 3 valid spots per group are required, otherwise the title reports insufficient group size.
+
+The p-value, significance star, and all three group medians appear in the **Panel 3 – Roundness KDE** title.
 
 ---
 
@@ -203,8 +208,8 @@ Artifacts are written next to the data. **ALL Folders** runs additionally write 
 
 | Row | Col 0 | Col 1 | Col 2 |
 |-----|-------|-------|-------|
-| 0 | **1. Proximity scatter** (Fisher P) + marginal KDEs | **2. Size KDE** (radius by class) | **3. Roundness KDE** (1 − eccentricity, valid spots only) |
-| 1 | **4. Innervation Distribution** (overlap %) | **5. Receptor Intensity KDE** (Wilcoxon P) | **6. Raw BTX (L) \| Cleaned BTX (R)** |
+| 0 | **1. Proximity scatter** (synaptic docking Mann–Whitney P) + marginal KDEs | **2. Size KDE** (radius by class) | **3. Roundness KDE** (3-way Kruskal + medians) |
+| 1 | **4. Innervation Distribution** (overlap %) | **5. Receptor Intensity KDE** (Mann-Whitney P) | **6. Raw BTX (L) \| Cleaned BTX (R)** |
 | 2 | **7. Cleaned BTX** | **8. Cleaned BTX + Detected Spots** | **9. Composite + All Spots** |
 | 3 | **10. Composite + Functional NMJs only** | *(density bar chart)* | *(unused)* |
 
@@ -217,4 +222,4 @@ Artifacts are written next to the data. **ALL Folders** runs additionally write 
 | 3. Mean Spot Radius by Folder | Bar chart — mean radius (µm) per folder |
 | 4. Mean Innervation Overlap by Folder | Bar chart — mean overlap % per folder |
 | 5. Median Distance to Muscle/Neuron | Bar chart — median edge-corrected distances |
-| 6. Global Proximity Scatter | Scatter + marginal KDEs across all folders (Fisher P) |
+| 6. Global Proximity Scatter | Scatter + marginal KDEs across all folders (docking Mann–Whitney P) |

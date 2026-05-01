@@ -68,6 +68,87 @@ def proximity_joint_axes(fig, outer_cell, hspace=0.08, wspace=0.08, title_first=
     return ax_main, ax_kde_x, ax_kde_y
 
 
+def _scatter_dataframe_with_clip_jitter(df, sigma_um=0.02, seed=42):
+    """Return a copy of df with tiny deterministic jitter applied ONLY to rows where
+    ``Dist_to_Muscle_um`` or ``Dist_to_Neuron_um`` were clipped to 0.
+
+    The clipping in :func:`max(0.0, d_center - r_um)` collapses every spot whose
+    center lies inside (or near) an EDT mask onto the same scatter coordinate, so a
+    naive ``sns.scatterplot`` renders many overlapping NMJs / clusters as a single
+    marker. This jitter only nudges the displayed coordinate (the source ``df`` is
+    untouched and the marginal KDEs continue to use the true distances).
+    """
+    if df is None or len(df) == 0:
+        return df
+    if "Dist_to_Muscle_um" not in df.columns or "Dist_to_Neuron_um" not in df.columns:
+        return df
+    rng = np.random.default_rng(seed)
+    out = df.copy()
+    n = len(out)
+    jx = np.abs(rng.normal(0.0, sigma_um, size=n))
+    jy = np.abs(rng.normal(0.0, sigma_um, size=n))
+    mx = out["Dist_to_Muscle_um"].to_numpy(copy=True).astype(float)
+    my = out["Dist_to_Neuron_um"].to_numpy(copy=True).astype(float)
+    clipped_x = mx <= 1e-9
+    clipped_y = my <= 1e-9
+    mx[clipped_x] = mx[clipped_x] + jx[clipped_x]
+    my[clipped_y] = my[clipped_y] + jy[clipped_y]
+    out["Dist_to_Muscle_um"] = mx
+    out["Dist_to_Neuron_um"] = my
+    return out
+
+
+def _mannwhitney_neuron_distance_nmij_vs_aneural(df, min_per_group=3):
+    """NMJ vs Aneural ``Dist_to_Neuron_um``, one-sided (NMJ stochastically smaller). Returns dict or None."""
+    from scipy.stats import mannwhitneyu
+
+    if df is None or len(df) == 0:
+        return None
+    if "BTX signal class" not in df.columns or "Dist_to_Neuron_um" not in df.columns:
+        return None
+    dist_nmj = df[df["BTX signal class"] == "NMJ"]["Dist_to_Neuron_um"].dropna()
+    dist_aneural = df[df["BTX signal class"] == "Aneural AChR clusters"]["Dist_to_Neuron_um"].dropna()
+    if len(dist_nmj) < min_per_group or len(dist_aneural) < min_per_group:
+        return None
+    try:
+        _, p_val = mannwhitneyu(dist_nmj, dist_aneural, alternative="less")
+    except ValueError:
+        return None
+    return {
+        "p_val": float(p_val),
+        "med_nmj": float(dist_nmj.median()),
+        "med_aneural": float(dist_aneural.median()),
+    }
+
+
+def get_spatial_docking_title(df, label_base="1. Synaptic Docking Precision", n_spots=None, min_per_group=3):
+    """
+    Synaptic docking precision: compare ``Dist_to_Neuron_um`` (edge distance to neuron) for NMJs
+    vs muscle-only (Aneural) clusters. ``alternative='less'`` tests whether NMJs sit closer to
+    the neuron channel mask (more precisely docked).
+    """
+    head = label_base if n_spots is None else f"{label_base} (n={n_spots})"
+    if df is None or len(df) == 0:
+        return f"{head}\n(No Data)"
+    res = _mannwhitney_neuron_distance_nmij_vs_aneural(df, min_per_group=min_per_group)
+    if res is None:
+        return (
+            f"{head}\n(Insufficient clusters for Mann-Whitney; need ≥{min_per_group} NMJ and ≥{min_per_group} Aneural)"
+        )
+    p_val = res["p_val"]
+    sig = "***" if p_val < 0.001 else "**" if p_val < 0.01 else "*" if p_val < 0.05 else "ns"
+    return (
+        f"{head}\n(Mann-Whitney P = {p_val:.4g} {sig} | "
+        f"NMJ: {res['med_nmj']:.2f} μm vs Aneural: {res['med_aneural']:.2f} μm)"
+    )
+
+
+def spatial_docking_mannwhitneyu_p(df, min_per_group=3):
+    """Per-image summary table: p-value or NaN when the test cannot be run."""
+    res = _mannwhitney_neuron_distance_nmij_vs_aneural(df, min_per_group=min_per_group)
+    return float(res["p_val"]) if res is not None else float("nan")
+
+
 def draw_proximity_joint(
     ax_main,
     ax_kde_x,
@@ -76,8 +157,6 @@ def draw_proximity_joint(
     distance_threshold_um,
     title,
     *,
-    fisher_p=None,
-    fisher_fmt=".4g",
     marginal_alpha=0.35,
     scatter_alpha=0.65,
     scatter_size=None,
@@ -132,8 +211,9 @@ def draw_proximity_joint(
                 legend=False,
                 warn_singular=False,
             )
+    df_scatter = _scatter_dataframe_with_clip_jitter(df)
     scatter_kw = dict(
-        data=df,
+        data=df_scatter,
         x="Dist_to_Muscle_um",
         y="Dist_to_Neuron_um",
         hue="BTX signal class",
@@ -144,14 +224,16 @@ def draw_proximity_joint(
     if scatter_size is not None:
         scatter_kw["s"] = scatter_size
         scatter_kw["alpha"] = scatter_alpha
+    else:
+        # Default per-image plots had no alpha, so multiple spots stacked at the same
+        # clipped (0,0) coordinate rendered as a single marker — visually under-counting
+        # vs. the yellow-circle overlay panels even though the data was complete.
+        scatter_kw["alpha"] = 0.7
     sns.scatterplot(**scatter_kw)
     ax_main.axvline(x=distance_threshold_um, color="black", linestyle="--")
     ax_main.axhline(y=distance_threshold_um, color="black", linestyle="--")
-    if fisher_p is not None:
-        sig_star = "***" if fisher_p < 0.001 else "**" if fisher_p < 0.01 else "*" if fisher_p < 0.05 else "ns"
-        full_title = f"{title} (Fisher P = {fisher_p:{fisher_fmt}} {sig_star})"
-    else:
-        full_title = title
+    n_spots = int(len(df)) if df is not None else 0
+    full_title = get_spatial_docking_title(df, label_base=title, n_spots=n_spots)
     if title_ax is not None:
         title_ax.clear()
         title_ax.axis("off")
@@ -392,31 +474,25 @@ def estimate_auto_threshold(img_btx_norm, sensitivity="Conservative"):
     """
     Compute an auto DoG threshold from a normalised BTX image.
 
-    sensitivity="Conservative"  →  median + 7×MAD, clip [0.02, 0.12]
-        Stays well above the noise floor; fewer but more reliable spots.
-    sensitivity="High"          →  median + 3×MAD, clip [0.02, 0.12]
-        Detects statistically significant spots at a lower sigma cutoff.
+    sensitivity="Conservative"  →  median + 3×MAD, clip [0.02, 0.12]
+        Moderate sensitivity; balances reliability and detection rate.
+    sensitivity="High"          →  median + 1×MAD, clip [0.02, 0.12]
+        Most permissive; detects the faintest spots above local noise.
     """
     sample = np.asarray(img_btx_norm, dtype=np.float32)[::4, ::4].ravel()
     if sample.size == 0:
         return 0.05
 
-    if sensitivity == "High":
-        pos = sample[sample > 0.005]
-        if pos.size < 50:
-            return 0.05
-        median = float(np.median(pos))
-        mad = float(np.median(np.abs(pos - median)))
-        std_est = 1.4826 * mad
-        return float(np.clip(median + 3.0 * std_est, 0.02, 0.12))
-    else:  # Conservative
-        pos = sample[sample > 0.005]
-        if pos.size < 50:
-            return 0.05
-        median = float(np.median(pos))
-        mad = float(np.median(np.abs(pos - median)))
-        std_est = 1.4826 * mad
-        return float(np.clip(median + 7.0 * std_est, 0.02, 0.12))
+    pos = sample[sample > 0.005]
+    if pos.size < 50:
+        return 0.05
+
+    median = float(np.median(pos))
+    mad = float(np.median(np.abs(pos - median)))
+    std_est = 1.4826 * mad
+
+    k = 1.0 if sensitivity == "High" else 3.0
+    return float(np.clip(median + k * std_est, 0.02, 0.12))
 
 with st.spinner("Loading CZI..."):
     try:
@@ -466,7 +542,7 @@ with col_p1:
         index=0,
         horizontal=True,
         disabled=not auto_threshold,
-        help="Conservative: median + 7×MAD (fewer, reliable spots). High: median + 3×MAD (more spots, lower sigma cutoff).",
+        help="Conservative: median + 3×MAD (balanced). High: median + 1×MAD (most sensitive, higher false-positive risk).",
     )
     threshold = st.number_input("Detection Threshold", value=0.05, step=0.01, disabled=auto_threshold)
     
@@ -667,33 +743,6 @@ if st.button("🚀 Process Pipeline", type="primary"):
 
             df_spots = pd.DataFrame(spots_data)
 
-            # Outputs
-            nmj_count = df_spots['is_NMJ'].sum()
-            formation_rate = nmj_count / total_spots * 100
-            
-            near_m_only = len(df_spots[(df_spots['Dist_to_Muscle_um'] <= distance_threshold_um) & (df_spots['Dist_to_Neuron_um'] > distance_threshold_um)])
-            near_n_only = len(df_spots[(df_spots['Dist_to_Neuron_um'] <= distance_threshold_um) & (df_spots['Dist_to_Muscle_um'] > distance_threshold_um)])
-            orphaned = len(df_spots[(df_spots['Dist_to_Muscle_um'] > distance_threshold_um) & (df_spots['Dist_to_Neuron_um'] > distance_threshold_um)])
-            
-            from scipy.stats import fisher_exact
-            _, fisher_p = fisher_exact([[nmj_count, near_m_only], [near_n_only, orphaned]])
-
-            # --- Visualisation ---
-            st.divider()
-            st.subheader("📊 Results")
-            sm1, sm2, sm3 = st.columns(3)
-            sm1.metric("Total BTX Spots", total_spots)
-            sm2.metric(f"NMJs (≤ {distance_threshold_um} µm)", nmj_count)
-            sm3.metric("NMJ Formation Rate", f"{formation_rate:.2f}%")
-            
-            st.markdown("### Proximity Statistics")
-            st.markdown(f"- **Near Aneural AChR clusters:** {near_m_only}")
-            st.markdown(f"- **Near Neuron-associated BTX signal:** {near_n_only}")
-            st.markdown(f"- **Orphaned (Far from both):** {orphaned}")
-            sig_star = "***" if fisher_p < 0.001 else "**" if fisher_p < 0.01 else "*" if fisher_p < 0.05 else "ns"
-            st.markdown(f"- **Fisher's Exact P-Value:** `{fisher_p:.4g}` {sig_star} *(Measures if spot recruitment to Muscle is statistically associated with recruitment to Neuron)*")
-
-            # Pre-calculate spatial classifications before saving downstream
             def classify_quadrant(row):
                 if row['Dist_to_Muscle_um'] <= distance_threshold_um and row['Dist_to_Neuron_um'] <= distance_threshold_um:
                     return 'NMJ'
@@ -703,7 +752,7 @@ if st.button("🚀 Process Pipeline", type="primary"):
                     return 'Neuron-associated BTX signal'
                 else:
                     return 'Orphaned'
-            
+
             df_spots['BTX signal class'] = df_spots.apply(classify_quadrant, axis=1)
             df_spots = normalize_btx_signal_classes(df_spots)
             df_spots["Resolution_Class"] = np.where(
@@ -712,7 +761,40 @@ if st.button("🚀 Process Pipeline", type="primary"):
                 "High-Res",
             )
 
-            # Save CSV
+            # Outputs
+            nmj_count = df_spots['is_NMJ'].sum()
+            formation_rate = nmj_count / total_spots * 100
+
+            near_m_only = len(df_spots[(df_spots['Dist_to_Muscle_um'] <= distance_threshold_um) & (df_spots['Dist_to_Neuron_um'] > distance_threshold_um)])
+            near_n_only = len(df_spots[(df_spots['Dist_to_Neuron_um'] <= distance_threshold_um) & (df_spots['Dist_to_Muscle_um'] > distance_threshold_um)])
+            orphaned = len(df_spots[(df_spots['Dist_to_Muscle_um'] > distance_threshold_um) & (df_spots['Dist_to_Neuron_um'] > distance_threshold_um)])
+
+            docking_p = spatial_docking_mannwhitneyu_p(df_spots)
+
+            # --- Visualisation ---
+            st.divider()
+            st.subheader("📊 Results")
+            sm1, sm2, sm3 = st.columns(3)
+            sm1.metric("Total BTX Spots", total_spots)
+            sm2.metric(f"NMJs (≤ {distance_threshold_um} µm)", nmj_count)
+            sm3.metric("NMJ Formation Rate", f"{formation_rate:.2f}%")
+
+            st.markdown("### Proximity Statistics")
+            st.markdown(f"- **Near Aneural AChR clusters:** {near_m_only}")
+            st.markdown(f"- **Near Neuron-associated BTX signal:** {near_n_only}")
+            st.markdown(f"- **Orphaned (Far from both):** {orphaned}")
+            if np.isnan(docking_p):
+                st.markdown(
+                    "- **Synaptic docking precision (Mann–Whitney):** not computed "
+                    "(need ≥3 NMJ and ≥3 Aneural clusters in this image)."
+                )
+            else:
+                docking_sig = "***" if docking_p < 0.001 else "**" if docking_p < 0.01 else "*" if docking_p < 0.05 else "ns"
+                st.markdown(
+                    f"- **Synaptic docking precision (Mann–Whitney, one-sided):** `{docking_p:.4g}` {docking_sig} "
+                    "— tests whether NMJs are closer to the neuron signal than muscle-only (aneural) clusters "
+                    "(smaller edge distance to neuron mask)."
+                )
             out_csv = os.path.join(folder_path, f"{selected_czi.replace('.czi', '')}_analysis.csv")
             df_spots.to_csv(out_csv, index=False)
 
@@ -829,8 +911,6 @@ if st.button("🚀 Process Pipeline", type="primary"):
                 df_spots,
                 distance_threshold_um,
                 "1. NMJ Proximity Analysis",
-                fisher_p=fisher_p,
-                fisher_fmt=".4f",
                 marginal_combined_black=True,
                 title_ax=ax_prox_title,
             )
