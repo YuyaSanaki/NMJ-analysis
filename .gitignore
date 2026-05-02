@@ -1,7 +1,6 @@
 # Ignore large raw image files and intermediate tracks
 *.czi
 *.csv
-*.png
 *.jpg
 *.tif
 *.tiff
@@ -10,6 +9,7 @@
 *.ppt
 *.key
 
+/data/*
 ToDo.txt
 
 # Ignore python caches and virtual environments
