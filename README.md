@@ -4,6 +4,8 @@ A fully containerized image analysis toolkit that detects, measures, and classif
 
 `.czi`  file should have 1. muscle staining channel, 2. neuron staining channel, and 3. alpha-bungarotoxin staining channel. Image can have extra channel but not be used in this pipeline. Strongly recommend to take high resolution image with high maginification lens (Bit: 16, Image size: ≥2000x2000, Lens: ≥40x, Z-stack image). Z-stack will convert to max projection inside the pipeline.
 
+![Example image](readme/iamge.png)
+
 Intended as a streamlined alternative to FIJI / TrackMate-heavy workflows.
 
 ## System Architecture
@@ -64,7 +66,7 @@ For very long batch runs, use the **"Save per-image NMJ_Plot PNGs"** option wise
 
 The pipeline subtracts broad diffuse background from the BTX channel using a large-sigma Gaussian blur. A smoothed background image is computed with σ = max(50 µm, 5 × max spot diameter), which is well above the largest expected cluster, and then subtracted from the raw image. This removes wide haze and muscle auto-fluorescence while preserving sharp puncta, and avoids the "donut" hollowing artifact that occurs when the background kernel is too close in size to the signal.
 
-![Background subtraction](backgroundsubtraction.png)
+![Background subtraction](readme/backgroundsubtraction.png)
 
 The pipeline uses skimage's `blob_dog` on the BTX (receptor) channel. A **morphological white top-hat** (rolling-ball–style background suppression) runs first when enabled.
 

@@ -25,6 +25,9 @@ BTX_SIGNAL_CLASS_LEGACY_ALIASES = {
     "Neuron only": "Neuron-associated BTX signal",
 }
 
+# Each subdirectory under this path is one dataset folder (contains `.czi` files).
+DATA_ROOT = "data"
+
 MIN_PIXELS_FOR_SHAPE = 20
 RESOLUTION_CLASS_LOWRES_UM_PER_PIXEL = 0.5
 
@@ -280,11 +283,16 @@ st.title("🔬 Single-Image NMJ Pipeline (CZI)")
 st.markdown("Select a single `.czi` file to automatically detect spots (DoG) and compute distance maps from raw fluorescence data.")
 
 # --- 1. Folder & File Selection ---
-base_dir = "."
-folders = [d for d in os.listdir(base_dir) if os.path.isdir(d) and not d.startswith(".") and d != "__pycache__"]
+os.makedirs(DATA_ROOT, exist_ok=True)
+base_dir = DATA_ROOT
+folders = [
+    d
+    for d in os.listdir(base_dir)
+    if os.path.isdir(os.path.join(base_dir, d)) and not d.startswith(".") and d != "__pycache__"
+]
 
 if not folders:
-    st.warning("No data folders found.")
+    st.warning(f"No dataset folders inside `{base_dir}/`. Add a subfolder with `.czi` files.")
     st.stop()
 
 selected_folder = st.selectbox("📂 Select Dataset Folder", sorted(folders))
@@ -599,7 +607,7 @@ with col_p1:
         st.stop()
     auto_threshold = st.checkbox(
         "Auto Threshold per image",
-        value=False,
+        value=True,
         help="Adapts DoG threshold from each image's BTX signal/noise profile.",
     )
     auto_thr_sensitivity = st.radio(
