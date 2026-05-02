@@ -10,6 +10,8 @@
 *.ppt
 *.key
 
+ToDo.txt
+
 # Ignore python caches and virtual environments
 __pycache__/
 *.py[cod]
