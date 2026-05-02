@@ -28,6 +28,23 @@ BTX_SIGNAL_CLASS_LEGACY_ALIASES = {
 MIN_PIXELS_FOR_SHAPE = 20
 RESOLUTION_CLASS_LOWRES_UM_PER_PIXEL = 0.5
 
+ROUNDNESS_KRUSKAL_CLASSES = ("NMJ", "Aneural AChR clusters", "Neuron-associated BTX signal")
+
+
+def dataframe_for_roundness_kde_and_kruskal(df):
+    """Roundness KDE input: three tissue classes, AREA_PX ≥ MIN_PIXELS_FOR_SHAPE, finite ROUNDNESS."""
+    if df is None:
+        return pd.DataFrame()
+    if len(df) == 0:
+        return df.iloc[0:0]
+    required = {"AREA_PX", "BTX signal class", "ROUNDNESS"}
+    if not required <= set(df.columns):
+        return df.iloc[0:0]
+    return df[
+        (df["AREA_PX"] >= MIN_PIXELS_FOR_SHAPE)
+        & (df["BTX signal class"].isin(ROUNDNESS_KRUSKAL_CLASSES))
+    ].dropna(subset=["ROUNDNESS"])
+
 
 def normalize_btx_signal_classes(df):
     if df is None or len(df) == 0 or "BTX signal class" not in df.columns:
@@ -286,8 +303,51 @@ czi_path = os.path.join(folder_path, selected_czi)
 # --- 2. Load CZI and Configure Channels ---
 
 
+@st.cache_data(show_spinner=False)
+def fast_czi_meta(path):
+    """Channel count and X pixel size from CZI metadata only (no image planes read)."""
+    czi = None
+    try:
+        czi = aicspylibczi.CziFile(path)
+        dims = czi.get_dims_shape()[0]
+        cc = dims.get("C", [0, 4])
+        num_channels = int(cc[1]) - int(cc[0])
+
+        pixel_size_um = 1.0
+        try:
+            for dist in czi.meta.findall(".//Distance"):
+                if dist.attrib.get("Id") == "X":
+                    val = dist.find("Value")
+                    if val is not None:
+                        pixel_size_um = float(val.text) * 1e6
+                        break
+        except Exception:
+            pass
+
+        shape_yx = None
+        y_rng = dims.get("Y")
+        x_rng = dims.get("X")
+        if y_rng is not None and x_rng is not None and len(y_rng) >= 2 and len(x_rng) >= 2:
+            try:
+                shape_yx = (int(y_rng[1]) - int(y_rng[0]), int(x_rng[1]) - int(x_rng[0]))
+            except Exception:
+                pass
+
+        return num_channels, pixel_size_um, shape_yx
+    finally:
+        if czi is not None and hasattr(czi, "close"):
+            try:
+                czi.close()
+            except Exception:
+                pass
+
+
 def _czi_channel_zmax_2d(czi, c_idx, dims0):
-    """Z-max to (Y, X) with at most one Z-plane in memory (see BTX_batch.load_czi_image)."""
+    """Return a single (Y, X) plane as Z-max projection with *one Z plane in RAM at a time*.
+
+    ``read_image(C=...)`` loads the full Z stack for that channel; streaming Z reduces
+    peak memory on deep stacks (critical for Docker / Streamlit OOM limits).
+    """
     z_rng = dims0.get("Z", (0, 1))
     z0, z1 = int(z_rng[0]), int(z_rng[1])
     if z1 - z0 <= 1:
@@ -310,36 +370,40 @@ def _czi_channel_zmax_2d(czi, c_idx, dims0):
     return acc
 
 
-@st.cache_data(show_spinner=False)
-def load_czi_image(path):
+def load_czi_image(path, channel_indices=None):
+    """Load CZI as 2D Z-max planes per channel.
+
+    When ``channel_indices`` is set, only those channels are read from disk (same strategy
+    as the batch app), avoiding loading every channel of large multi-channel files into RAM.
+    """
     czi = None
     try:
         czi = aicspylibczi.CziFile(path)
-        dims0 = czi.get_dims_shape()[0]
-        c_rng = dims0.get("C", (0, 1))
-        c0, c1 = int(c_rng[0]), int(c_rng[1])
-        planes = [_czi_channel_zmax_2d(czi, c_idx, dims0) for c_idx in range(c0, c1)]
-        img_sq = np.stack(planes, axis=0)
+
+        if channel_indices is not None:
+            wanted = list(dict.fromkeys(int(c) for c in channel_indices))
+            try:
+                dims0 = czi.get_dims_shape()[0]
+                channels = {}
+                for c_idx in wanted:
+                    channels[c_idx] = _czi_channel_zmax_2d(czi, c_idx, dims0)
+                return channels
+            except Exception:
+                pass
+
+        img, _ = czi.read_image()
+        img_sq = np.squeeze(img)
+        if img_sq.ndim == 4:
+            img_sq = np.max(img_sq, axis=1)
         if img_sq.ndim < 3:
             img_sq = np.expand_dims(img_sq, axis=0)
         if img_sq.ndim == 3 and img_sq.shape[-1] <= 10 and img_sq.shape[-1] < img_sq.shape[0]:
             img_sq = np.moveaxis(img_sq, -1, 0)
 
-        # --- Extract Pixel Size (Microns) ---
-        pixel_size_um = 1.0  # Default fallback
-        try:
-            # Zeiss stores scaling in elements like <Distance Id="X"><Value>1.03e-07</Value>
-            for dist in czi.meta.findall('.//Distance'):
-                if dist.attrib.get('Id') == 'X':
-                    val = dist.find('Value')
-                    if val is not None:
-                        # Values are saved natively in pure meters. Convert to micrometers.
-                        pixel_size_um = float(val.text) * 1e6
-                        break
-        except Exception:
-            pass
-
-        return img_sq, pixel_size_um
+        if channel_indices is not None:
+            wanted = list(dict.fromkeys(int(c) for c in channel_indices))
+            return {c_idx: img_sq[c_idx].copy() for c_idx in wanted}
+        return img_sq
     finally:
         if czi is not None and hasattr(czi, "close"):
             try:
@@ -377,16 +441,17 @@ def compute_bg_radius_px(bg_radius_um, pixel_size_um, image_shape):
     return radius_px, clipped, radius_cap
 
 
-def remove_muscle_haze(img, pixel_size_um, max_spot_diameter_um=12.0):
+def remove_muscle_haze(img, pixel_size_um, bg_sigma_um):
     """
     Subtract broad BTX background so puncta remain while wide plaques are not hollowed out.
 
-    Gaussian σ (µm) is ``max(50, 5 × max_spot_diameter_um)`` so the haze scale stays well
-    above the largest expected cluster and reduces donut artifacts on big BTX regions.
+    ``bg_sigma_um`` is the Gaussian standard deviation in micrometers for the low-frequency
+    haze estimate. It comes from the Streamlit control **Manual Background Radius (μm)** or,
+    when **Auto-Optimize Background Radius** is on, from the max spot diameter (µm).
     """
     pixel_size_safe = max(float(pixel_size_um), 1e-9)
-    bg_sigma_um = max(50.0, float(max_spot_diameter_um) * 5.0)
-    bg_sigma_px = float(bg_sigma_um) / pixel_size_safe
+    sigma_um = max(1e-9, float(bg_sigma_um))
+    bg_sigma_px = float(sigma_um) / pixel_size_safe
     background = gaussian(img, sigma=bg_sigma_px, preserve_range=True)
     result = img.astype(np.float32, copy=False) - background.astype(np.float32, copy=False)
     return np.clip(result, 0.0, None).astype(img.dtype, copy=False)
@@ -434,23 +499,17 @@ def detect_blobs_stable(img_btx_norm, min_diameter_um, max_diameter_um, pixel_si
     if min_sigma_px is None:
         return None, dog_scale, sigma_cap
 
-    # Finer pyramid than skimage default 1.6; DoG response ~∝ (sigma_ratio−1), which blob_dog does not normalize.
-    blob_dog_sigma_ratio = 1.1
-    _sk_default_sigma_ratio = 1.6
-
     threshold_for_dog = float(threshold)
     if dog_scale < 1.0:
         # Downsampling smooths local peaks, so keep DoG sensitivity comparable by
         # reducing threshold slightly in scaled space (with a conservative floor).
         threshold_for_dog *= max(0.6, dog_scale)
-    threshold_for_dog *= (blob_dog_sigma_ratio - 1.0) / (_sk_default_sigma_ratio - 1.0)
 
     blobs = blob_dog(
         img_for_dog,
         min_sigma=min_sigma_px,
         max_sigma=max_sigma_px,
         threshold=threshold_for_dog,
-        sigma_ratio=blob_dog_sigma_ratio,
     )
     if len(blobs) == 0:
         return blobs, dog_scale, sigma_cap
@@ -494,13 +553,20 @@ def estimate_auto_threshold(img_btx_norm, sensitivity="Conservative"):
     k = 1.0 if sensitivity == "High" else 3.0
     return float(np.clip(median + k * std_est, 0.02, 0.12))
 
-with st.spinner("Loading CZI..."):
+with st.spinner("Reading CZI metadata..."):
     try:
-        image_data, pixel_size_um = load_czi_image(czi_path)
-        num_channels = image_data.shape[0]
-        st.success(f"Loaded successfully! Detected {num_channels} channels. Shape: {image_data.shape[1:]}")
+        num_channels, pixel_size_um, shape_yx = fast_czi_meta(czi_path)
+        shape_msg = (
+            f" Nominal frame (Y×X): {shape_yx[0]}×{shape_yx[1]} pixels."
+            if shape_yx is not None
+            else ""
+        )
+        st.success(
+            f"Ready — {num_channels} channel(s).{shape_msg} "
+            "(Image planes load when you run Process Pipeline; only the three mapped channels are read from disk.)"
+        )
     except Exception as e:
-        st.error(f"Error loading CZI: {e}")
+        st.error(f"Error reading CZI metadata: {e}")
         st.stop()
 
 
@@ -567,14 +633,23 @@ with col_p3:
 if st.button("🚀 Process Pipeline", type="primary"):
     with st.spinner("Processing Images & Computing Distances..."):
         try:
-            # Extract channels
-            img_muscle = image_data[muscle_idx]
-            img_neuron = image_data[neuron_idx]
-            img_btx = image_data[btx_idx]
+            # Extract only the mapped channels (Z-max per channel; avoids loading all C planes).
+            channels = load_czi_image(
+                czi_path,
+                channel_indices=[muscle_idx, neuron_idx, btx_idx],
+            )
+            if isinstance(channels, dict):
+                img_muscle = channels[muscle_idx]
+                img_neuron = channels[neuron_idx]
+                img_btx = channels[btx_idx]
+            else:
+                img_muscle = channels[muscle_idx]
+                img_neuron = channels[neuron_idx]
+                img_btx = channels[btx_idx]
             img_btx_raw = img_btx.copy()
 
             # --- Background Subtraction + Robust Normalization ---
-            img_btx = remove_muscle_haze(img_btx, pixel_size, max_spot_diameter_um=max_diameter_um)
+            img_btx = remove_muscle_haze(img_btx, pixel_size, btx_bg_radius_um)
             p_high = float(np.percentile(img_btx, 99.9))
             if p_high <= 0:
                 p_high = 1e-5
@@ -848,19 +923,21 @@ if st.button("🚀 Process Pipeline", type="primary"):
             ax_comp_arrows = fig.add_subplot(outer[2, 2])
             
             
-            # Graph 6: Roundness KDE (valid shapes only)
-            df_shape = df_spots.dropna(subset=["ROUNDNESS"])
+            # Graph 6: Roundness KDE (≥MIN pixels; NMJ / Aneural / Neuron-associated only — matches batch logic)
+            _roundness_order = list(ROUNDNESS_KRUSKAL_CLASSES)
+            df_shape = dataframe_for_roundness_kde_and_kruskal(df_spots)
             if len(df_shape) > 0:
                 sns.kdeplot(
                     data=df_shape,
                     x="ROUNDNESS",
                     hue="BTX signal class",
-                    hue_order=BTX_SIGNAL_CLASS_ORDER,
+                    hue_order=_roundness_order,
                     palette=BTX_SIGNAL_CLASS_PALETTE,
                     ax=ax_circ_kde,
                     common_norm=False,
                     fill=True,
                     clip=(0, 1),
+                    warn_singular=False,
                 )
             ax_circ_kde.set_title("3. NMJ Roundness KDE (1 − eccentricity)")
             ax_circ_kde.set_xlabel("Roundness (1 = circle)")
@@ -962,7 +1039,8 @@ if st.button("🚀 Process Pipeline", type="primary"):
             
             # Save visual
             out_img = os.path.join(folder_path, f"{selected_czi.replace('.czi', '')}_NMJ_Plot.png")
-            fig.savefig(out_img, bbox_inches='tight')
+            fig.savefig(out_img, bbox_inches="tight")
+            fig.clf()
             plt.close(fig)
 
             st.success(f"Files saved: `{out_csv}` and `{out_img}`")

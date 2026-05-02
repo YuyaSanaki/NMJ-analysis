@@ -32,6 +32,28 @@ MIN_PIXELS_FOR_SHAPE = 20
 # CZI pixel size (µm / pixel); above this, label stacks as low-resolution for faceting / QC.
 RESOLUTION_CLASS_LOWRES_UM_PER_PIXEL = 0.5
 
+# Roundness KDE + 3-way Kruskal: same three classes; tiny masks excluded (see MIN_PIXELS_FOR_SHAPE).
+ROUNDNESS_KRUSKAL_CLASSES = ("NMJ", "Aneural AChR clusters", "Neuron-associated BTX signal")
+
+
+def dataframe_for_roundness_kde_and_kruskal(df):
+    """Rows used for roundness KDEs and :func:`roundness_3way_kruskal_title` (plot == test population).
+
+    Excludes **Orphaned** and any spot with ``AREA_PX`` below ``MIN_PIXELS_FOR_SHAPE`` so KDEs are
+    not spiked by biologically meaningless near-circular noise blobs.
+    """
+    if df is None:
+        return pd.DataFrame()
+    if len(df) == 0:
+        return df.iloc[0:0]
+    required = {"AREA_PX", "BTX signal class", "ROUNDNESS"}
+    if not required <= set(df.columns):
+        return df.iloc[0:0]
+    return df[
+        (df["AREA_PX"] >= MIN_PIXELS_FOR_SHAPE)
+        & (df["BTX signal class"].isin(ROUNDNESS_KRUSKAL_CLASSES))
+    ].dropna(subset=["ROUNDNESS"])
+
 
 def normalize_btx_signal_classes(df):
     """Map legacy BTX signal class labels so plots/counts match BTX_SIGNAL_CLASS_*."""
@@ -109,11 +131,7 @@ def roundness_3way_kruskal_title(df, label_base="3. Global NMJ Roundness Analysi
     if not required <= set(df.columns):
         return f"{label_base} (Missing Columns)"
 
-    targets = ["NMJ", "Aneural AChR clusters", "Neuron-associated BTX signal"]
-    df_valid = df[
-        (df["AREA_PX"] >= MIN_PIXELS_FOR_SHAPE)
-        & (df["BTX signal class"].isin(targets))
-    ].dropna(subset=["ROUNDNESS"])
+    df_valid = dataframe_for_roundness_kde_and_kruskal(df)
 
     g_nmj = df_valid[df_valid["BTX signal class"] == "NMJ"]["ROUNDNESS"]
     g_aneural = df_valid[df_valid["BTX signal class"] == "Aneural AChR clusters"]["ROUNDNESS"]
@@ -668,16 +686,17 @@ def compute_bg_radius_px(bg_radius_um, pixel_size_um, image_shape):
     return radius_px, clipped, radius_cap
 
 
-def remove_muscle_haze(img, pixel_size_um, max_spot_diameter_um=12.0):
+def remove_muscle_haze(img, pixel_size_um, bg_sigma_um):
     """
     Subtract broad BTX background so puncta remain while wide plaques are not hollowed out.
 
-    Gaussian σ (µm) is ``max(50, 5 × max_spot_diameter_um)`` so the haze scale stays well
-    above the largest expected cluster and reduces donut artifacts on big BTX regions.
+    ``bg_sigma_um`` is the Gaussian standard deviation in micrometers for the low-frequency
+    haze estimate. It comes from the Streamlit control **Manual Background Radius (μm)** or,
+    when **Auto-Optimize Background Radius** is on, from the max spot diameter (µm).
     """
     pixel_size_safe = max(float(pixel_size_um), 1e-9)
-    bg_sigma_um = max(50.0, float(max_spot_diameter_um) * 5.0)
-    bg_sigma_px = float(bg_sigma_um) / pixel_size_safe
+    sigma_um = max(1e-9, float(bg_sigma_um))
+    bg_sigma_px = float(sigma_um) / pixel_size_safe
     background = gaussian(img, sigma=bg_sigma_px, preserve_range=True)
     result = img.astype(np.float32, copy=False) - background.astype(np.float32, copy=False)
     return np.clip(result, 0.0, None).astype(img.dtype, copy=False)
@@ -867,6 +886,7 @@ def save_all_folders_summary_png(master_df, out_png, distance_threshold_um):
 
 
     fig.savefig(out_png, bbox_inches="tight")
+    fig.clf()
     plt.close(fig)
     return folder_stats
 
@@ -1006,6 +1026,7 @@ if run_current or run_all:
         status.write(f"🔄 **Processing ({i+1}/{len(all_target_czis)}):** `{current_d}/{czi_file}` ...")
         
         try:
+            fig = None  # Per-iteration figure; closed in ``finally`` (never ``plt.close('all')``).
             # Extract channels using selective channel reads. Only the muscle/neuron/BTX
             # channels are pulled off disk + Z-projected, instead of loading the full
             # multi-channel volume and keeping it pinned alive via numpy views.
@@ -1031,7 +1052,7 @@ if run_current or run_all:
             img_btx_raw = img_btx.copy() if save_pngs else None
 
             # --- Background subtraction + BTX normalization (single shared p_high for DoG and spot crops) ---
-            img_btx = remove_muscle_haze(img_btx, pixel_size, max_spot_diameter_um=max_diameter_um)
+            img_btx = remove_muscle_haze(img_btx, pixel_size, btx_bg_radius_um)
             p_high = float(np.percentile(img_btx, 99.9))
             if p_high <= 0:
                 p_high = 1e-5
@@ -1225,7 +1246,7 @@ if run_current or run_all:
 
             # Outputs
             nmj_count = df_spots["is_NMJ"].sum()
-            formation_rate = nmj_count / total_spots * 100
+            formation_rate = (nmj_count / total_spots * 100) if total_spots > 0 else 0.0
 
             near_m_only = len(
                 df_spots[
@@ -1357,10 +1378,9 @@ if run_current or run_all:
             ax_unused_2 = fig.add_subplot(outer[3, 2])
             
             
-            # Graph 6: Roundness KDE (valid shapes only; tiny masks and Orphaned excluded)
-            _roundness_order = [c for c in BTX_SIGNAL_CLASS_ORDER if c != "Orphaned"]
-            df_shape = df_spots.dropna(subset=["ROUNDNESS"])
-            df_shape = df_shape[df_shape["BTX signal class"] != "Orphaned"]
+            # Graph 6: Roundness KDE (same rows as Kruskal title: ≥MIN pixels, three classes, no Orphaned)
+            _roundness_order = list(ROUNDNESS_KRUSKAL_CLASSES)
+            df_shape = dataframe_for_roundness_kde_and_kruskal(df_spots)
             if len(df_shape) > 0:
                 sns.kdeplot(
                     data=df_shape,
@@ -1508,8 +1528,8 @@ if run_current or run_all:
 
             # Save visual directly to disk, completely bypassing the Streamlit frontend DOM to prevent DOM payload crash
             out_img = os.path.join(current_d, f"{czi_file.replace('.czi', '')}{_thr_tag}_NMJ_Plot.png")
-            fig.savefig(out_img, bbox_inches='tight')
-            plt.close(fig) # Prevent Matplotlib from leaking memory during large batches!
+            fig.savefig(out_img, bbox_inches="tight")
+            # Figure teardown runs in ``finally`` (single ``plt.close(fig)``, thread-safe vs ``close('all')``).
             
         except Exception as e:
             st.warning(f"Analysis failed organically on {czi_file}: {e}")
@@ -1553,11 +1573,15 @@ if run_current or run_all:
             window_neuron = None
             labeled = None
             spot_mask = None
+            _fig_cleanup = fig
             fig = None
             axes = None
-            # Defensively close any matplotlib figures still tracked by pyplot; this
-            # plugs leaks if an exception fired mid-figure construction.
-            plt.close('all')
+            if _fig_cleanup is not None:
+                try:
+                    _fig_cleanup.clf()
+                except Exception:
+                    pass
+                plt.close(_fig_cleanup)
             gc.collect()
             
         progress.progress((i + 1) / len(all_target_czis))
@@ -1641,10 +1665,9 @@ if run_current or run_all:
         ax_size_kde.set_xlabel('Radius (μm)')
         ax_size_kde.set_ylabel('Probability Density')
 
-        # 3. Roundness KDE (spots with enough pixels for a stable moment-based shape; Orphaned excluded)
-        _roundness_order_global = [c for c in BTX_SIGNAL_CLASS_ORDER if c != "Orphaned"]
-        master_shape = master_df.dropna(subset=["ROUNDNESS"])
-        master_shape = master_shape[master_shape["BTX signal class"] != "Orphaned"]
+        # 3. Roundness KDE (same rows as Kruskal title: ≥MIN pixels, three classes, no Orphaned)
+        _roundness_order_global = list(ROUNDNESS_KRUSKAL_CLASSES)
+        master_shape = dataframe_for_roundness_kde_and_kruskal(master_df)
         if len(master_shape) > 0:
             sns.kdeplot(
                 data=master_shape,
@@ -1818,9 +1841,9 @@ if run_current or run_all:
             ax_control.tick_params(axis='x', rotation=45)
 
         st.pyplot(fig)
-        fig.savefig(master_png, bbox_inches='tight')
+        fig.savefig(master_png, bbox_inches="tight")
+        fig.clf()
         plt.close(fig)
-        plt.close('all')
 
         st.success(f"Aggregate Dashboard generated: `{master_png}`")
 

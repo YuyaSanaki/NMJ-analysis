@@ -1,8 +1,8 @@
 # Neuromuscular Junction (NMJ) Analysis Pipeline
 
-A fully containerized image analysis toolkit that detects, measures, and classifies Neuromuscular Junctions (NMJs) from multi-channel confocal `.czi` files.
+A fully containerized image analysis toolkit that detects, measures, and classifies Neuromuscular Junctions (NMJs) from multi-channel z-stack confocal `.czi` files.
 
-`.czi`  file should have 1. muscle staining channel, 2. neuron staining channel, and 3. alpha-bungarotoxin staining channel. Image can have extra channel but not be used in this pipeline. Strongly recommend to take high resolution image with high maginification lens (Bit: 16, Image size: >2000x2000, Lens: >40x, Z-stack image). Z-stack will convert to max projection inside the pipeline.
+`.czi`  file should have 1. muscle staining channel, 2. neuron staining channel, and 3. alpha-bungarotoxin staining channel. Image can have extra channel but not be used in this pipeline. Strongly recommend to take high resolution image with high maginification lens (Bit: 16, Image size: ≥2000x2000, Lens: ≥40x, Z-stack image). Z-stack will convert to max projection inside the pipeline.
 
 Intended as a streamlined alternative to FIJI / TrackMate-heavy workflows.
 
@@ -130,6 +130,19 @@ Each detected spot is assigned one of four classes based on its edge-corrected d
 
 All p-values are annotated with significance stars: `***` p < 0.001 · `**` p < 0.01 · `*` p < 0.05 · `ns` p ≥ 0.05.
 
+**Where each test appears**
+
+| Test | What is compared | Batch: per-image `*_NMJ_Plot.png` | Batch: aggregate `BATCH_SUMMARY*.png` / `ALL_FOLDERS_SUMMARY*.png` | Single-image `BTX.py` |
+|------|------------------|-----------------------------------|----------------------------------------------------------------------|-------------------------|
+| Mann–Whitney (docking) | `Dist_to_Neuron_um`: **NMJ** vs **Aneural AChR clusters** (`alternative="less"`) | Panel **1** title | Panel **1** (global proximity) title | Panel **1** title + Results markdown |
+| Kruskal–Wallis (roundness) | `ROUNDNESS`: **NMJ** vs **Aneural** vs **Neuron-associated** (3 groups) | Panel **3** title | Panel **3** title | Panel **3**: plot only (title is static) |
+| Mann–Whitney (intensity) | `MEAN_INTENSITY`: **NMJ** vs **Orphaned** (`alternative="greater"`, all spots pooled) | Panel **5** title | Panel **5** title + optional enrichment line in Streamlit | **Not** computed in the single-image UI; Panel **5** title is static |
+| Friedman (zone density) | Per-image area-normalised densities: Muscle vs Neuron vs Orphan zones | — | Panel **6** (“BTX Enrichment”) when the batch run finishes | — |
+
+**Independence caveat:** Mann–Whitney and Kruskal–Wallis on pooled spots treat each spot as a unit; spots in one image are correlated. Use pooled p-values as **exploratory** unless you redesign (e.g. per-image summaries + mixed models). The **Friedman** test is explicitly **paired per image** (one row per image, three zone densities).
+
+**Proximity scatter (Panel 1):** when many spots share the same edge-corrected distance (often after clipping to 0 µm), the scatter plot applies a **small display-only jitter** so markers do not stack invisibly; **CSV values and marginal KDEs use the true coordinates**. Total spot count `n=` in the title matches the number of detected spots.
+
 ---
 
 **Synaptic docking precision (Mann–Whitney U) — Panel 1**
@@ -150,7 +163,7 @@ The p-value, stars, and group medians appear in the **Panel 1 – Proximity Scat
 
 *How it works:* All `MEAN_INTENSITY` values are pooled by class, then NMJ is compared against Orphaned spots using one-sided Mann-Whitney U (`scipy.stats.mannwhitneyu`, `alternative="greater"`). This directly tests whether the NMJ intensity distribution is shifted to higher values than the orphaned/background control distribution, without reducing each image to a median first. At least 3 spots per class are required; otherwise the panel reports "Insufficient Clusters".
 
-The p-value, significance star, and class medians appear in the **Panel 5 – Receptor Intensity KDE** title (e.g. `Mann-Whitney P = 0.0031 **`). 
+The p-value, significance star, and class medians appear in the **Panel 5 – Receptor Intensity KDE** title on **batch** figures (e.g. `Mann-Whitney P = 0.0031 **`). The single-image app (`BTX.py`) does not run this test in Streamlit yet; use the batch pipeline for that summary.
 
 ---
 
@@ -160,17 +173,17 @@ The p-value, significance star, and class medians appear in the **Panel 5 – Re
 
 *How it works:* `ROUNDNESS` is compared across the three groups using a 3-way Kruskal-Wallis H-test (`scipy.stats.kruskal`). Quality control matches the plotting logic: only spots with `AREA_PX >= MIN_PIXELS_FOR_SHAPE` and non-null `ROUNDNESS` are included; Orphaned spots are excluded from this 3-way morphology test. At least 3 valid spots per group are required, otherwise the title reports insufficient group size.
 
-The p-value, significance star, and all three group medians appear in the **Panel 3 – Roundness KDE** title.
+The p-value, significance star, and all three group medians appear in the **Panel 3 – Roundness KDE** title in **batch** outputs. The single-image app plots the same three classes but leaves a static axis title (no Kruskal line in `BTX.py` yet).
 
 ---
 
-**Friedman Test (BTX zone specificity) — Panel 6**
+**Friedman Test (BTX zone specificity) — batch aggregate dashboard, Panel 6**
 
-*What it asks:* Does BTX spot density differ significantly across the three tissue zones (muscle zone, neuron-only zone, and orphan zone) when compared within the same image?
+*What it asks:* Does BTX spot density differ significantly across the three tissue zones (muscle zone, neuron-only zone, and orphan zone) when compared **within the same image**?
 
-*How it works:* For each image, spots are counted in each zone and divided by the zone's area (µm²) to give an area-normalised density. This produces three matched columns across images (one row = one image, three columns = three zone densities). The Friedman test (`scipy.stats.friedmanchisquare`) is a non-parametric equivalent of a repeated-measures ANOVA that ranks the three densities within each image and tests whether any zone is consistently ranked higher. Because each image serves as its own block (control), between-image variability in overall BTX signal strength is cancelled out, leaving only the within-image zone preference.
+*How it works:* For each image, spots are counted in each zone and divided by the zone's area (µm²) to give an area-normalised density. This produces three matched columns across images (one row = one image, three columns = three zone densities). The Friedman test (`scipy.stats.friedmanchisquare`) is a non-parametric repeated-measures test that ranks the three densities within each image. Because each image serves as its own block, between-image variability in overall BTX signal strength is partially controlled when comparing zones.
 
-A significant result confirms that BTX staining is not uniformly distributed across the zones — it is specifically enriched near muscle and nerve tissue, validating the biological specificity of the staining. The p-value and star appear in the **Panel 6 – BTX Enrichment** boxplot title.
+A significant result suggests BTX staining is not uniformly distributed across the zones. The p-value and star appear in the **Panel 6 – BTX Enrichment** title on the **saved batch summary figure** (`BATCH_SUMMARY*.png` or `ALL_FOLDERS_SUMMARY*.png`). This is **not** the same “Panel 6” as in the per-image `*_NMJ_Plot.png` grid (that figure uses different panel numbering).
 
 ---
 
@@ -194,15 +207,19 @@ With **`docker compose --profile batch up --build`**:
 
 Artifacts are written next to the data. **ALL Folders** runs additionally write aggregate files in the **project root** (the app working directory, `/app` in Docker).
 
+When **Auto Threshold per image** is enabled, filenames include a sensitivity tag so Conservative and High runs do not overwrite each other: `_thrConservative` or `_thrHigh` (e.g. `ALL_FOLDERS_MASTER_RESULTS_thrHigh.csv`). With manual threshold, that tag is omitted.
+
 | File | Scope | Description |
 |------|-------|-------------|
-| `ALL_FOLDERS_MASTER_RESULTS.csv` | project root | Combined spot table for all-folder runs, with `SOURCE_FOLDER` and `SOURCE_IMAGE` columns |
-| `ALL_FOLDERS_SUMMARY.png` | project root | 6-panel aggregate dashboard (see below) |
-| `ALL_FOLDERS_SUMMARY_TABLE.csv` | project root | Per-folder summary statistics |
-| `BATCH_MASTER_RESULTS.csv` | selected folder | Combined spot table for current-folder runs |
-| `BATCH_SUMMARY.png` | selected folder | 6-panel dashboard for the current folder |
-| `[Filename]_analysis.csv` | next to image | Per-image spot table |
-| `[Filename]_NMJ_Plot.png` | next to image | 10-panel figure (optional; can be disabled) |
+| `ALL_FOLDERS_MASTER_RESULTS[_thrTag].csv` | project root | Combined spot table for all-folder runs, with `SOURCE_FOLDER` and `SOURCE_IMAGE` columns |
+| `ALL_FOLDERS_SUMMARY[_thrTag].png` | project root | Aggregate dashboard (3×2 or 4×2 when **ALL Folders**; includes docking / Kruskal / intensity titles and Friedman panel 6) |
+| `ALL_FOLDERS_SUMMARY_TABLE[_thrTag].csv` | project root | Per-folder summary statistics |
+| `BATCH_MASTER_RESULTS[_thrTag].csv` | selected folder | Combined spot table for current-folder runs |
+| `BATCH_SUMMARY[_thrTag].png` | selected folder | Aggregate dashboard for the current folder |
+| `[Filename][_thrTag]_analysis.csv` | next to image | Per-image spot table |
+| `[Filename][_thrTag]_NMJ_Plot.png` | next to image | 10-panel figure (optional; can be disabled) |
+
+The per-run **batch summary metrics** table in Streamlit includes a **`Docking Mann-Whitney P`** column (synaptic docking test per image; `NaN` if fewer than 3 NMJ or 3 Aneural spots).
 
 ### Per-image 10-panel figure layout (4 × 3 grid)
 
@@ -213,13 +230,20 @@ Artifacts are written next to the data. **ALL Folders** runs additionally write 
 | 2 | **7. Cleaned BTX** | **8. Cleaned BTX + Detected Spots** | **9. Composite + All Spots** |
 | 3 | **10. Composite + Functional NMJs only** | *(density bar chart)* | *(unused)* |
 
-### ALL_FOLDERS summary dashboard (3 × 2 grid)
+### Aggregate dashboard layout (`BATCH_SUMMARY*.png` / `ALL_FOLDERS_SUMMARY*.png`)
 
-| Panel | Content |
-|-------|---------|
-| 1. NMJ Formation Rate by Folder | Bar chart — NMJ rate (%) per folder |
-| 2. Total BTX Spots by Folder | Bar chart — total spot count per folder |
-| 3. Mean Spot Radius by Folder | Bar chart — mean radius (µm) per folder |
-| 4. Mean Innervation Overlap by Folder | Bar chart — mean overlap % per folder |
-| 5. Median Distance to Muscle/Neuron | Bar chart — median edge-corrected distances |
-| 6. Global Proximity Scatter | Scatter + marginal KDEs across all folders (docking Mann–Whitney P) |
+After a batch finishes, these files mirror the **Global** figure shown in Streamlit: pooled spots from `BATCH_MASTER_RESULTS*.csv` or `ALL_FOLDERS_MASTER_RESULTS*.csv`.
+
+| Slot | Content |
+|------|---------|
+| **1** | Global proximity scatter + marginal KDEs (docking Mann–Whitney in title) |
+| **2** | Global size KDE (radius by class) |
+| **3** | Global roundness KDE (3-way Kruskal in title) |
+| **4** | Global NMJ innervation histogram |
+| **5** | Global intensity KDE (NMJ vs Orphaned Mann–Whitney in title) |
+| **6** | BTX zone-density box/strip plot (Friedman P in title) |
+| **7** | *(ALL Folders only)* Per-image NMJ rate strip + folder means (full-width row below the 3×2 block) |
+
+**Current folder** runs use a **3×2** grid (panels 1–6). **ALL Folders** adds a fourth row so the layout is **4×2** with the control chart spanning both columns.
+
+The helper `save_all_folders_summary_png()` in `BTX_batch.py` builds a **3×2** figure of **per-folder** summaries (NMJ rate, total spots, mean radius, mean innervation overlap, scatter of folder median muscle vs neuron distances) plus **panel 6**: pooled **All-Folders Proximity** with the same docking Mann–Whitney title as the live dashboard. It is **not** invoked by the Streamlit batch buttons; call it from your own script if you want that layout.
