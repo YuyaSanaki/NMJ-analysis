@@ -30,6 +30,23 @@ BTX_SIGNAL_CLASS_LEGACY_ALIASES = {
 # Each subdirectory under this path is one dataset folder (contains `.czi` files).
 DATA_ROOT = "data"
 
+# DoG ``blob_dog`` sigma_ratio: **Auto threshold sensitivity** radio (auto) or manual number input (default = Conservative).
+DOG_SIGMA_RATIO_CONSERVATIVE = 1.6
+DOG_SIGMA_RATIO_HIGH = 1.3
+# Auto DoG threshold uses median + k × (1.4826 × MAD); k is fixed (sensitivity only changes sigma_ratio).
+AUTO_DOG_THRESHOLD_MAD_K = 3.0
+
+
+def dog_sigma_ratio_from_sensitivity(sensitivity: str) -> float:
+    return DOG_SIGMA_RATIO_HIGH if sensitivity == "High" else DOG_SIGMA_RATIO_CONSERVATIVE
+
+
+def format_auto_thr_sensitivity_label(mode: str) -> str:
+    if mode == "High":
+        return f"High ({DOG_SIGMA_RATIO_HIGH:g})"
+    return f"Conservative ({DOG_SIGMA_RATIO_CONSERVATIVE:g})"
+
+
 # Shape metrics (eccentricity / moments) are unreliable when the mask has too few pixels.
 MIN_PIXELS_FOR_SHAPE = 20
 # CZI pixel size (µm / pixel); above this, label stacks as low-resolution for faceting / QC.
@@ -724,8 +741,12 @@ def threshold_raw_for_spot_crop(threshold_used, p_high, window_btx):
     return th_raw
 
 
-def detect_blobs_stable(img_btx_norm, min_diameter_um, max_diameter_um, pixel_size_um, threshold):
+def detect_blobs_stable(
+    img_btx_norm, min_diameter_um, max_diameter_um, pixel_size_um, threshold, sigma_ratio=None
+):
     """Run DoG in a memory-safe way using diameter thresholds (µm)."""
+    if sigma_ratio is None:
+        sigma_ratio = DOG_SIGMA_RATIO_CONSERVATIVE
     # blob_dog scale is sigma; approximate blob radius is sigma*sqrt(2).
     # Therefore: sigma_um = (diameter_um / 2) / sqrt(2).
     min_sigma_um = float(min_diameter_um) / (2.0 * np.sqrt(2.0))
@@ -762,6 +783,7 @@ def detect_blobs_stable(img_btx_norm, min_diameter_um, max_diameter_um, pixel_si
         img_for_dog,
         min_sigma=min_sigma_px,
         max_sigma=max_sigma_px,
+        sigma_ratio=float(sigma_ratio),
         threshold=threshold_for_dog,
     )
     if len(blobs) == 0:
@@ -782,14 +804,13 @@ def detect_blobs_stable(img_btx_norm, min_diameter_um, max_diameter_um, pixel_si
     return blobs, dog_scale, sigma_cap
 
 
-def estimate_auto_threshold(img_btx_norm, sensitivity="Conservative"):
+def estimate_auto_threshold(img_btx_norm):
     """
     Compute an auto DoG threshold from a normalised BTX image.
 
-    sensitivity="Conservative"  →  median + 3×MAD, clip [0.02, 0.12]
-        Moderate sensitivity; balances reliability and detection rate.
-    sensitivity="High"          →  median + 1×MAD, clip [0.02, 0.12]
-        Most permissive; detects the faintest spots above local noise.
+    Uses ``median + AUTO_DOG_THRESHOLD_MAD_K × (1.4826 × MAD)`` on positives (> 0.005) in a
+    subsampled image, clipped to ``[0.02, 0.12]``. DoG **sigma_ratio** (Conservative vs High) is
+    separate — see :func:`dog_sigma_ratio_from_sensitivity`.
     """
     sample = np.asarray(img_btx_norm, dtype=np.float32)[::4, ::4].ravel()
     if sample.size == 0:
@@ -803,7 +824,7 @@ def estimate_auto_threshold(img_btx_norm, sensitivity="Conservative"):
     mad = float(np.median(np.abs(pos - median)))
     std_est = 1.4826 * mad
 
-    k = 1.0 if sensitivity == "High" else 3.0
+    k = float(AUTO_DOG_THRESHOLD_MAD_K)
     return float(np.clip(median + k * std_est, 0.02, 0.12))
 
 
@@ -915,14 +936,25 @@ with col_p1:
         help="Adapts DoG threshold from each image's BTX signal/noise profile.",
     )
     auto_thr_sensitivity = st.radio(
-        "Auto Threshold Sensitivity",
+        "Auto threshold sensitivity (DoG σ ratio)",
         options=["Conservative", "High"],
         index=0,
+        format_func=format_auto_thr_sensitivity_label,
         horizontal=True,
         disabled=not auto_threshold,
-        help="Conservative: median + 3×MAD (balanced). High: median + 1×MAD (most sensitive, higher false-positive risk).",
+        help="skimage blob_dog sigma_ratio: Conservative (1.6) vs High (1.3).",
     )
-    threshold = st.number_input("Detection Threshold", value=0.05, step=0.01, disabled=auto_threshold)
+    threshold = st.number_input("Detection Threshold", value=0.12, step=0.01, disabled=auto_threshold)
+    dog_sigma_ratio_manual = st.number_input(
+        "DoG sigma ratio (manual)",
+        value=float(DOG_SIGMA_RATIO_CONSERVATIVE),
+        min_value=1.01,
+        max_value=2.5,
+        step=0.05,
+        format="%.2f",
+        disabled=auto_threshold,
+        help="Used with manual Detection Threshold; default matches Auto Conservative (1.6).",
+    )
     
     auto_bg = st.checkbox("Auto-Optimize Background Radius", value=True, help="Uses a physical-radius model (µm) and converts to pixels per image.")
     if not auto_bg:
@@ -954,7 +986,15 @@ save_pngs = st.checkbox(
 if run_current or run_all:
     all_file_stats = []
     master_rows_written = 0
-    
+
+    dog_sigma_ratio = (
+        dog_sigma_ratio_from_sensitivity(auto_thr_sensitivity)
+        if auto_threshold
+        else float(dog_sigma_ratio_manual)
+    )
+    if not auto_threshold:
+        st.caption(f"Manual DoG: detection threshold `{float(threshold):.4f}`, sigma_ratio `{dog_sigma_ratio}`")
+
     progress = st.progress(0)
     status = st.empty()
     
@@ -1064,15 +1104,18 @@ if run_current or run_all:
             if p_high <= 0:
                 p_high = 1e-5
             img_btx_norm = np.clip(img_btx.astype(np.float32, copy=False) / p_high, 0.0, 1.0)
-            threshold_used = estimate_auto_threshold(img_btx_norm, sensitivity=auto_thr_sensitivity) if auto_threshold else float(threshold)
+            threshold_used = estimate_auto_threshold(img_btx_norm) if auto_threshold else float(threshold)
             if auto_threshold:
-                st.caption(f"{czi_file}: Detection threshold used `{threshold_used:.4f}`")
+                st.caption(
+                    f"{czi_file}: Detection threshold `{threshold_used:.4f}` — DoG sigma_ratio `{dog_sigma_ratio}`"
+                )
             blobs, dog_scale, sigma_cap = detect_blobs_stable(
                 img_btx_norm=img_btx_norm,
                 min_diameter_um=min_diameter_um,
                 max_diameter_um=max_diameter_um,
                 pixel_size_um=pixel_size,
                 threshold=threshold_used,
+                sigma_ratio=dog_sigma_ratio,
             )
             if auto_threshold and blobs is not None and len(blobs) == 0:
                 # One rescue pass for strict auto thresholds on low-contrast images.
@@ -1083,6 +1126,7 @@ if run_current or run_all:
                     max_diameter_um=max_diameter_um,
                     pixel_size_um=pixel_size,
                     threshold=threshold_retry,
+                    sigma_ratio=dog_sigma_ratio,
                 )
                 if blobs_retry is not None and len(blobs_retry) > 0:
                     blobs = blobs_retry

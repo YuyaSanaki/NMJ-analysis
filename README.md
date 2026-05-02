@@ -28,21 +28,17 @@ Plain `docker compose up` with **no** `--profile` does not start either app (by 
    docker compose --profile batch up --build
    ```
    Keep the terminal window open during your analysis and use the terminal window for the rest of the commands.
+
 3. Open **`http://localhost:8501`** in the browser.
+
 4. Set up analysis configurations in the browser.
 
-      **Channel Setup:** Assign the muscle, nerve, and BTX imaging channels for each dataset folder. (Note: The pixel size will be detected automatically).
-
-      **Spot Detection:** Configure your spot detection parameters. The default NMJ spot size range is 5–12 µm. It is highly recommended to enable Auto Threshold per image and Auto-Optimize Background Subtraction Radius.
-
-      **Validation Plots:** Enabling the option to save per-image NMJ plot PNGs during batch processing will consume additional memory, but it generates a valuable validation plot for every individual image.
-
-      **EDT Threshold:** If the muscle or nerve staining appears faint, increase the EDT threshold. Because this adjustment can introduce artifacts, be sure to review the per-image NMJ plots to verify your results.
-      
-      **NMJ Logic:** This setting defines the acceptable distance from the BTX signal to assume that the BTX staining is correctly associated with the surrounding proximity tissues (i.e., the muscle and nerve).
-
-      **The output** will be saved in `/Users/username/NMJanalysis/Experiment1/` and/or `/Users/username/NMJanalysis/`.
- 
+   - **Channel Setup:** Assign the muscle, nerve, and BTX imaging channels for each dataset folder. (Note: The pixel size will be detected automatically).
+   - **Spot Detection:** Configure your spot detection parameters. The default NMJ spot size range is 5–12 µm. It is highly recommended to enable Auto Threshold per image and Auto-Optimize Background Subtraction Radius.
+   - **Validation Plots:** Enabling the option to save per-image NMJ plot PNGs during batch processing will consume additional memory, but it generates a valuable validation plot for every individual image.
+   - **Spot detection Threshold:** If the muscle or nerve staining appears faint, increase the DoG threshold (Detection Threshold and DoG sigma). Because this adjustment can introduce artifacts, be sure to review the per-image NMJ plots to verify your results.
+   - **NMJ Logic:** This setting defines the acceptable distance from the BTX signal to assume that the BTX staining is correctly associated with the surrounding proximity tissues (i.e., the muscle and nerve).
+   - **The output** is written under `data/<dataset>/` next to your inputs, with batch “ALL Folders” summaries under `data/` when you use that mode.
 
 
 5. **Stop:** `Ctrl+C` in the terminal, or 
@@ -76,7 +72,7 @@ Spot size in the UI is expressed as **diameter in μm** (min / max). Internally,
 sigma_um = diameter_um / (2 × sqrt(2))
 ```
 
-**Auto DoG threshold:** `estimate_auto_threshold()` computes `median + k × MAD` on positive pixel values (> 0.005) in a subsampled, haze-subtracted BTX image, clamped to `[0.02, 0.12]`. The multiplier `k` is set by the **Auto Threshold Sensitivity** radio button: `k = 3` (Conservative, balanced) or `k = 1` (High, most sensitive). The MAD-based estimator scales with image noise, keeping the threshold above the background floor regardless of absolute brightness.
+**Auto DoG threshold:** `estimate_auto_threshold()` computes `median + 3 × (1.4826 × MAD)` on positive pixel values (> 0.005) in a subsampled, haze-subtracted BTX image, clamped to `[0.02, 0.12]`. **Auto threshold sensitivity** sets skimage `blob_dog` **`sigma_ratio`**: **Conservative (1.6)** or **High (1.3)** (shown explicitly in the UI). With a **manual** detection threshold, use **DoG sigma ratio (manual)** (default **1.6**, same as Auto Conservative).
 
 ### 2. Physical units (μm)
 
