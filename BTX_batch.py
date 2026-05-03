@@ -828,8 +828,13 @@ def estimate_auto_threshold(img_btx_norm):
     return float(np.clip(median + k * std_est, 0.02, 0.12))
 
 
-def save_all_folders_summary_png(master_df, out_png, distance_threshold_um):
-    """Create a single mother-directory PNG summarizing all folders."""
+def save_all_folders_summary_png(
+    master_df, out_png, distance_threshold_um, *, also_save_panel_pdfs=False
+):
+    """Create a single mother-directory PNG summarizing all folders.
+
+    When ``also_save_panel_pdfs`` is True, also writes one PDF per subplot/panel next to ``out_png``.
+    """
     master_df = normalize_btx_signal_classes(master_df)
 
     folder_stats = (
@@ -915,9 +920,60 @@ def save_all_folders_summary_png(master_df, out_png, distance_threshold_um):
 
 
     fig.savefig(out_png, bbox_inches="tight")
+    if also_save_panel_pdfs:
+        stem, _ext = os.path.splitext(out_png)
+        _export_figure_panels_to_pdfs(
+            fig,
+            [
+                ("panel01_nmj_rate_by_folder", [ax_nmj_rate]),
+                ("panel02_total_spots_by_folder", [ax_total_spots]),
+                ("panel03_mean_radius_by_folder", [ax_radius]),
+                ("panel04_mean_innervation_by_folder", [ax_overlap]),
+                ("panel05_folder_medians_distance_space", [ax_distance]),
+                (
+                    "panel06_all_folders_proximity",
+                    [ax_prox_title, ax_prox_kde_x, ax_prox_main, ax_prox_kde_y],
+                ),
+            ],
+            stem,
+        )
     fig.clf()
     plt.close(fig)
     return folder_stats
+
+
+def _export_figure_panels_to_pdfs(fig, panels, output_stem, *, pad_inches=0.08):
+    """Save each logical panel as its own PDF using a union tight-bbox of the given axes.
+
+    ``panels`` is a list of ``(filename_suffix, list_of_axes)``; files are written as
+    ``{output_stem}_{suffix}.pdf``. Requires a drawn canvas (caller should have called
+    ``savefig`` or this function will ``draw`` first).
+    """
+    try:
+        fig.canvas.draw()
+    except Exception:
+        pass
+    renderer = fig.canvas.get_renderer()
+    out_dir = os.path.dirname(output_stem) or "."
+    os.makedirs(out_dir, exist_ok=True)
+    for suffix, axes_list in panels:
+        axes_list = [a for a in axes_list if a is not None]
+        if not axes_list:
+            continue
+        bboxes = []
+        for ax in axes_list:
+            try:
+                bboxes.append(ax.get_tightbbox(renderer))
+            except Exception:
+                continue
+        if not bboxes:
+            continue
+        bbox = bboxes[0]
+        for b in bboxes[1:]:
+            bbox = bbox.union(b)
+        bbox_inches = bbox.transformed(fig.dpi_scale_trans.inverted())
+        out_pdf = f"{output_stem}_{suffix}.pdf"
+        fig.savefig(out_pdf, format="pdf", bbox_inches=bbox_inches, pad_inches=pad_inches)
 
 # --- 3. Detection Parameters ---
 st.subheader("🎯 Spot Detection (DoG) & Analysis Parameters")
@@ -1850,6 +1906,7 @@ if run_current or run_all:
             ax_spec.text(0.5, 0.5, "Insufficient images\nfor specificity test", ha="center", va="center")
             ax_spec.set_axis_off()
 
+        ax_control = None
         if run_all:
             ax_control = fig.add_subplot(outer[3, :])
 
@@ -1893,10 +1950,33 @@ if run_current or run_all:
 
         st.pyplot(fig)
         fig.savefig(master_png, bbox_inches="tight")
+
+        pdf_note = ""
+        if run_all:
+            stem, _ext = os.path.splitext(master_png)
+            panel_specs = [
+                (
+                    "panel01_global_proximity",
+                    [ax_prox_title, ax_prox_kde_x, ax_scatter, ax_prox_kde_y],
+                ),
+                ("panel02_global_size_kde", [ax_size_kde]),
+                ("panel03_global_roundness_kde", [ax_circ_kde]),
+                ("panel04_global_innervation", [ax_overlap_kde]),
+                ("panel05_global_intensity", [ax_intensity_kde]),
+                ("panel06_btx_enrichment", [ax_spec]),
+            ]
+            if ax_control is not None:
+                panel_specs.append(("panel07_per_image_nmj_control", [ax_control]))
+            _export_figure_panels_to_pdfs(fig, panel_specs, stem)
+            pdf_note = (
+                f" Also saved {len(panel_specs)} per-panel PDFs as "
+                f"`{os.path.basename(stem)}_panel*.pdf` in the same folder."
+            )
+
         fig.clf()
         plt.close(fig)
 
-        st.success(f"Aggregate Dashboard generated: `{master_png}`")
+        st.success(f"Aggregate Dashboard generated: `{master_png}`.{pdf_note}")
 
         # Drop the (potentially huge) aggregate DataFrame and any derived helpers so
         # the script's resident memory shrinks back down before Streamlit re-runs.
