@@ -1,0 +1,134 @@
+#!/usr/bin/env python3
+"""Rebuild aggregate dashboard PNG + per-panel PDFs from a saved ``ALL_FOLDERS_MASTER_RESULTS*.csv``.
+
+Does not re-read CZI files. Panel 6 (Friedman / zone densities) needs per-image columns
+``File``, ``Density_Muscle``, ``Density_Neuron``, ``Density_Orphan``. Those are **not** in the
+spot-level master CSV; new ALL-folder batch runs save them as ``ALL_FOLDERS_FILE_STATS*.csv``
+next to the master file. This script loads that companion CSV automatically when present, or
+use ``--file-stats-csv`` to point to one explicitly.
+
+Examples::
+
+    python regenerate_all_folders_panel_pdfs.py data/ALL_FOLDERS_MASTER_RESULTS_thrConservative.csv
+    python regenerate_all_folders_panel_pdfs.py data/ALL_FOLDERS_MASTER_RESULTS.csv \\
+        --distance-threshold 1.0 --output-stem data/my_rerun_dashboard
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+
+
+def _companion_file_stats_csv(master_csv: str) -> str | None:
+    """Look beside the master CSV for a batch-saved per-image zone-density table."""
+    ab = os.path.abspath(master_csv)
+    base = os.path.basename(ab)
+    stem, ext = os.path.splitext(ab)
+    if "ALL_FOLDERS_MASTER_RESULTS" in base:
+        candidate = stem.replace("ALL_FOLDERS_MASTER_RESULTS", "ALL_FOLDERS_FILE_STATS") + ext
+        if os.path.isfile(candidate):
+            return candidate
+    if "BATCH_MASTER_RESULTS" in base:
+        candidate = stem.replace("BATCH_MASTER_RESULTS", "BATCH_FILE_STATS") + ext
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("master_csv", help="Path to ALL_FOLDERS_MASTER_RESULTS*.csv")
+    parser.add_argument(
+        "--distance-threshold",
+        type=float,
+        default=1.0,
+        help="Functional NMJ boundary (μm); must match the run you want to mirror.",
+    )
+    parser.add_argument(
+        "--file-stats-csv",
+        default=None,
+        help="Optional CSV with columns File, Density_Muscle, Density_Neuron, Density_Orphan "
+        "(one row per image) to restore panel 6.",
+    )
+    parser.add_argument(
+        "--output-stem",
+        default=None,
+        help="Output path stem without extension (PNG + panel PDFs). "
+        "Default: <master_csv path without .csv>_dashboard_regen",
+    )
+    parser.add_argument(
+        "--single-row-layout",
+        action="store_true",
+        help="Use 3×2 layout without row 7 control chart (matches single-folder batch summary).",
+    )
+    args = parser.parse_args()
+
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import pandas as pd
+
+    from nmj_master_dashboard import (
+        _export_figure_panels_to_pdfs,
+        build_aggregate_batch_dashboard_figure,
+        ensure_roundness_column,
+        normalize_btx_signal_classes,
+    )
+
+    if not os.path.isfile(args.master_csv):
+        print(f"Error: file not found: {args.master_csv}", file=sys.stderr)
+        return 2
+
+    master_df = pd.read_csv(args.master_csv)
+    master_df = ensure_roundness_column(normalize_btx_signal_classes(master_df))
+
+    file_stats_path = args.file_stats_csv
+    if not file_stats_path:
+        file_stats_path = _companion_file_stats_csv(args.master_csv)
+        if file_stats_path:
+            print(f"Using companion zone-density CSV: {file_stats_path}", file=sys.stderr)
+
+    all_file_stats: list = []
+    if file_stats_path:
+        if not os.path.isfile(file_stats_path):
+            print(f"Error: file-stats CSV not found: {file_stats_path}", file=sys.stderr)
+            return 2
+        fs = pd.read_csv(file_stats_path)
+        all_file_stats = fs.to_dict("records")
+
+    run_all = not args.single_row_layout
+    stem = args.output_stem or (os.path.splitext(os.path.abspath(args.master_csv))[0] + "_dashboard_regen")
+
+    fig, panel_specs, _meta = build_aggregate_batch_dashboard_figure(
+        master_df,
+        args.distance_threshold,
+        run_all=run_all,
+        all_file_stats=all_file_stats,
+    )
+    out_png = f"{stem}.png"
+    fig.savefig(out_png, bbox_inches="tight")
+    written, errs = _export_figure_panels_to_pdfs(fig, panel_specs, stem)
+    plt.close(fig)
+
+    print(f"Wrote dashboard PNG: {out_png}")
+    if written:
+        print(f"Wrote {len(written)} panel PDF(s):")
+        for p in written:
+            print(f"  {p}")
+    else:
+        print("No panel PDFs were written.", file=sys.stderr)
+    if errs:
+        print("Export messages:", file=sys.stderr)
+        for e in errs[:15]:
+            print(f"  {e}", file=sys.stderr)
+        if len(errs) > 15:
+            print(f"  … and {len(errs) - 15} more", file=sys.stderr)
+
+    return 0 if written else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
