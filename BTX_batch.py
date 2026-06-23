@@ -869,19 +869,21 @@ if run_current or run_all:
 
             docking_p = spatial_docking_mannwhitneyu_p(df_spots)
 
-            # --- AREA-NORMALIZED DENSITY (muscle zone vs neuron-only vs orphan) ---
+            # --- AREA-NORMALIZED DENSITY (NMJ vs muscle-only vs neuron-only vs orphan) ---
             mask_m_zone = edt_muscle_um <= distance_threshold_um
             mask_n_zone = edt_neuron_um <= distance_threshold_um
             um2_per_px = float(pixel_size**2)
-            area_m_um2 = float(np.sum(mask_m_zone)) * um2_per_px
+            area_nmj_um2 = float(np.sum(mask_m_zone & mask_n_zone)) * um2_per_px
+            area_m_um2 = float(np.sum(mask_m_zone & ~mask_n_zone)) * um2_per_px
             area_n_um2 = float(np.sum(mask_n_zone & ~mask_m_zone)) * um2_per_px
             area_o_um2 = float(np.sum(~mask_m_zone & ~mask_n_zone)) * um2_per_px
 
-            # Reuse the existing quadrant counts; muscle zone includes NMJs + aneural-near-muscle.
-            c_m = int(nmj_count) + int(near_m_only)
+            c_nmj = int(nmj_count)
+            c_m = int(near_m_only)
             c_n_only = int(near_n_only)
             c_orphan = int(orphaned)
 
+            dens_nmj = (c_nmj / area_nmj_um2 * 1000) if area_nmj_um2 > 0 else 0.0
             dens_m = (c_m / area_m_um2 * 1000) if area_m_um2 > 0 else 0.0
             dens_n = (c_n_only / area_n_um2 * 1000) if area_n_um2 > 0 else 0.0
             dens_o = (c_orphan / area_o_um2 * 1000) if area_o_um2 > 0 else 0.0
@@ -911,9 +913,11 @@ if run_current or run_all:
                     "Orphaned": orphaned,
                     "Formation Rate (%)": formation_rate,
                     "Docking Mann-Whitney P": docking_p,
+                    "Density_NMJ": dens_nmj,
                     "Density_Muscle": dens_m,
                     "Density_Neuron": dens_n,
                     "Density_Orphan": dens_o,
+                    "Area_NMJ_um2": area_nmj_um2,
                     "Area_Muscle_um2": area_m_um2,
                     "Area_Neuron_um2": area_n_um2,
                     "Area_Orphan_um2": area_o_um2,
@@ -1090,15 +1094,15 @@ if run_current or run_all:
             ax_comp_arrows.set_title("10. Composite + Functional NMJs Only")
             ax_comp_arrows.axis('off')
             dens_data = pd.DataFrame({
-                "Zone": ["Muscle", "Neuron", "Orphan"],
-                "Density": [dens_m, dens_n, dens_o],
+                "Zone": ["NMJ", "Muscle", "Neuron", "Orphan"],
+                "Density": [dens_nmj, dens_m, dens_n, dens_o],
             })
             sns.barplot(
                 data=dens_data,
                 x="Zone",
                 y="Density",
                 hue="Zone",
-                palette=["red", "blue", "gray"],
+                palette=["red", "green", "blue", "gray"],
                 legend=False,
                 ax=ax_unused_1,
             )
@@ -1250,18 +1254,76 @@ if run_current or run_all:
                 )
 
         p_friedman = dash_meta.get("friedman_p")
-        if run_all and p_friedman is not None and dash_meta.get("n_spec_images", 0) >= 2:
-            st.markdown("### 🧪 Enrichment confirmation")
-            if p_friedman < 0.05:
-                st.success(
-                    "Confirmed: BTX signals are significantly enriched in specific tissue zones "
-                    f"(Friedman p={p_friedman:.4e}). This indicates staining is not uniform random background."
-                )
-            else:
-                st.warning(
-                    "Note: Density differences across zones did not reach statistical significance "
-                    f"(Friedman p={p_friedman:.4g}). Check for high background or low sample count."
-                )
+        p_friedman_ab = dash_meta.get("friedman_p_abundance")
+        n_spec_images = dash_meta.get("n_spec_images", 0)
+        
+        if p_friedman is not None and n_spec_images >= 2:
+            st.markdown("### 🧪 Statistical Analysis of BTX Distribution")
+            
+            col_stat1, col_stat2 = st.columns(2)
+            
+            with col_stat1:
+                st.markdown("#### 1️⃣ Local Zone Density (Enrichment)")
+                st.caption("Tests if spot density (spots / zone area) differs between zones. This evaluates local concentration.")
+                if p_friedman < 0.05:
+                    st.success(
+                        "Confirmed: BTX signals are significantly enriched in specific zones "
+                        f"(Friedman p={p_friedman:.4e})."
+                    )
+                else:
+                    st.warning(
+                        "Note: Local density differences across zones did not reach significance "
+                        f"(Friedman p={p_friedman:.4g})."
+                    )
+                
+                conover_df = dash_meta.get("conover_results")
+                if conover_df is not None and not conover_df.empty:
+                    display_df = conover_df.copy().rename(columns={
+                        "group1": "Zone 1",
+                        "group2": "Zone 2",
+                        "t_stat": "t-statistic",
+                        "p_val": "p-value (raw)",
+                        "p_val_adj": "p-value (adjusted)",
+                        "sig": "Significance",
+                    })
+                    cols_order = ["Zone 1", "Zone 2", "t-statistic", "p-value (raw)", "p-value (adjusted)", "Significance"]
+                    st.dataframe(display_df[cols_order].style.format({
+                        "t-statistic": "{:.3f}",
+                        "p-value (raw)": "{:.4e}",
+                        "p-value (adjusted)": "{:.4e}"
+                    }))
+                    
+            with col_stat2:
+                st.markdown("#### 2️⃣ Global BTX Abundance")
+                st.caption("Tests if the absolute number of spots (normalized by total image area) differs between zones. This evaluates overall abundance.")
+                if p_friedman_ab is not None:
+                    if p_friedman_ab < 0.05:
+                        st.success(
+                            "Confirmed: Absolute abundance differs significantly across zones "
+                            f"(Friedman p={p_friedman_ab:.4e})."
+                        )
+                    else:
+                        st.warning(
+                            "Note: Absolute abundance differences across zones did not reach significance "
+                            f"(Friedman p={p_friedman_ab:.4g})."
+                        )
+                    
+                    conover_df_ab = dash_meta.get("conover_abundance_results")
+                    if conover_df_ab is not None and not conover_df_ab.empty:
+                        display_df_ab = conover_df_ab.copy().rename(columns={
+                            "group1": "Zone 1",
+                            "group2": "Zone 2",
+                            "t_stat": "t-statistic",
+                            "p_val": "p-value (raw)",
+                            "p_val_adj": "p-value (adjusted)",
+                            "sig": "Significance",
+                        })
+                        cols_order = ["Zone 1", "Zone 2", "t-statistic", "p-value (raw)", "p-value (adjusted)", "Significance"]
+                        st.dataframe(display_df_ab[cols_order].style.format({
+                            "t-statistic": "{:.3f}",
+                            "p-value (raw)": "{:.4e}",
+                            "p-value (adjusted)": "{:.4e}"
+                        }))
 
         # Persist PNG + per-panel PDFs before ``st.pyplot`` — Streamlit may clear the figure
         # after display unless ``clear_figure=False``, which would otherwise yield empty PDFs.

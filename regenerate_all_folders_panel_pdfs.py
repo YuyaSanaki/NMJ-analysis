@@ -2,7 +2,7 @@
 """Rebuild aggregate dashboard PNG + per-panel PDFs from a saved ``ALL_FOLDERS_MASTER_RESULTS*.csv``.
 
 Does not re-read CZI files. Panel 6 (Friedman / zone densities) needs per-image columns
-``File``, ``Density_Muscle``, ``Density_Neuron``, ``Density_Orphan``. Those are **not** in the
+``File``, ``Density_NMJ``, ``Density_Muscle``, ``Density_Neuron``, ``Density_Orphan``. Those are **not** in the
 spot-level master CSV; new ALL-folder batch runs save them as ``ALL_FOLDERS_FILE_STATS*.csv``
 next to the master file. This script loads that companion CSV automatically when present, or
 use ``--file-stats-csv`` to point to one explicitly.
@@ -49,7 +49,7 @@ def main() -> int:
     parser.add_argument(
         "--file-stats-csv",
         default=None,
-        help="Optional CSV with columns File, Density_Muscle, Density_Neuron, Density_Orphan "
+        help="Optional CSV with columns File, Density_NMJ, Density_Muscle, Density_Neuron, Density_Orphan "
         "(one row per image) to restore panel 6.",
     )
     parser.add_argument(

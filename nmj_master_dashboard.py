@@ -517,6 +517,86 @@ def save_all_folders_summary_png(
     return folder_stats
 
 
+def posthoc_conover_iman(stats_df_spec, value_vars, block_col="File"):
+    from scipy.stats import rankdata, t, friedmanchisquare
+
+    # Extract only the columns of interest and drop any rows with missing values
+    df_clean = stats_df_spec[[block_col] + value_vars].dropna()
+    N = len(df_clean)
+    k = len(value_vars)
+
+    if N < 2 or k < 2:
+        return None, None
+
+    # Rank each row (block)
+    ranks = np.zeros((N, k), dtype=float)
+    for idx in range(N):
+        row_vals = df_clean[value_vars].iloc[idx].to_numpy()
+        ranks[idx, :] = rankdata(row_vals)
+
+    # Sum of squares of all ranks
+    A = np.sum(ranks ** 2)
+
+    # Sum of squares of treatment totals divided by N
+    R_j = np.sum(ranks, axis=0)
+    B = np.sum(R_j ** 2) / N
+
+    mean_ranks = R_j / N
+
+    # Friedman statistic (T1) using scipy
+    t1_stat, _ = friedmanchisquare(*[df_clean[col] for col in value_vars])
+
+    df = (N - 1) * (k - 1)
+
+    # Standard error
+    denom = (2.0 * (A - B) / (N * (N - 1) * (k - 1))) * (1.0 - t1_stat / (N * (k - 1)))
+    if denom <= 0:
+        denom = 1e-15
+    se = np.sqrt(denom)
+
+    # Compute pairwise t-statistics and p-values
+    results = []
+    for i in range(k):
+        for j in range(i + 1, k):
+            diff = np.abs(mean_ranks[i] - mean_ranks[j])
+            t_stat = diff / se
+            p_val = 2.0 * (1.0 - t.cdf(t_stat, df))
+
+            g1 = value_vars[i].replace("Density_", "").replace("Abundance_", "")
+            g2 = value_vars[j].replace("Density_", "").replace("Abundance_", "")
+
+            results.append({
+                "group1": g1,
+                "group2": g2,
+                "t_stat": float(t_stat),
+                "p_val": float(p_val),
+                "mean_rank1": float(mean_ranks[i]),
+                "mean_rank2": float(mean_ranks[j])
+            })
+
+    df_results = pd.DataFrame(results)
+
+    # Holm-Bonferroni correction
+    m = len(df_results)
+    sorted_indices = np.argsort(df_results["p_val"].to_numpy())
+    adj_p = np.zeros(m)
+    current_max = 0.0
+    for rank_idx, orig_idx in enumerate(sorted_indices):
+        raw_p = df_results.loc[orig_idx, "p_val"]
+        adj = raw_p * (m - rank_idx)
+        current_max = max(current_max, min(1.0, adj))
+        adj_p[orig_idx] = current_max
+
+    df_results["p_val_adj"] = adj_p
+
+    def sig_stars(p):
+        return "***" if p < 0.001 else "**" if p < 0.01 else "*" if p < 0.05 else "ns"
+
+    df_results["sig"] = df_results["p_val_adj"].apply(sig_stars)
+
+    return df_results, t1_stat
+
+
 def build_aggregate_batch_dashboard_figure(master_df, distance_threshold_um, *, run_all, all_file_stats):
     """Batch end-card figure: same layout as ``BTX_batch`` post-batch dashboard.
 
@@ -533,19 +613,19 @@ def build_aggregate_batch_dashboard_figure(master_df, distance_threshold_um, *, 
     if run_all:
         fig = plt.figure(figsize=(24, 34), constrained_layout=True)
         fig.set_constrained_layout_pads(w_pad=0.02, h_pad=0.02, hspace=0.01, wspace=0.01)
-        outer = fig.add_gridspec(4, 2)
     else:
-        fig = plt.figure(figsize=(20, 24), constrained_layout=True)
-        outer = fig.add_gridspec(3, 2)
+        fig = plt.figure(figsize=(20, 32), constrained_layout=True)
+    outer = fig.add_gridspec(4, 2)
 
     ax_scatter, ax_prox_kde_x, ax_prox_kde_y, ax_prox_title = proximity_joint_axes(
-        fig, outer[0, 0], title_first=True, large_main_panel=run_all
+        fig, outer[0, 0], title_first=True, large_main_panel=True
     )
     ax_size_kde = fig.add_subplot(outer[0, 1])
     ax_circ_kde = fig.add_subplot(outer[1, 0])
     ax_overlap_kde = fig.add_subplot(outer[1, 1])
     ax_intensity_kde = fig.add_subplot(outer[2, 0])
     ax_spec = fig.add_subplot(outer[2, 1])
+    ax_abundance = fig.add_subplot(outer[3, 0])
 
     draw_proximity_joint(
         ax_scatter,
@@ -647,23 +727,55 @@ def build_aggregate_batch_dashboard_figure(master_df, distance_threshold_um, *, 
         stats_df_spec.columns
     ):
         n_spec_images = len(stats_df_spec)
+        has_nmj = "Density_NMJ" in stats_df_spec.columns
+        if has_nmj:
+            value_vars = ["Density_NMJ", "Density_Muscle", "Density_Neuron", "Density_Orphan"]
+            palette = ["red", "green", "blue", "gray"]
+        else:
+            value_vars = ["Density_Muscle", "Density_Neuron", "Density_Orphan"]
+            palette = ["red", "blue", "gray"]
+
         melt_df = stats_df_spec.melt(
             id_vars=["File"],
-            value_vars=["Density_Muscle", "Density_Neuron", "Density_Orphan"],
+            value_vars=value_vars,
             var_name="Zone",
             value_name="Density",
         )
         melt_df["Zone"] = melt_df["Zone"].str.replace("Density_", "", regex=False)
+        conover_results = None
         try:
-            _stat_friedman, p_friedman = friedmanchisquare(
-                stats_df_spec["Density_Muscle"],
-                stats_df_spec["Density_Neuron"],
-                stats_df_spec["Density_Orphan"],
-            )
+            if has_nmj:
+                _stat_friedman, p_friedman = friedmanchisquare(
+                    stats_df_spec["Density_NMJ"],
+                    stats_df_spec["Density_Muscle"],
+                    stats_df_spec["Density_Neuron"],
+                    stats_df_spec["Density_Orphan"],
+                )
+            else:
+                _stat_friedman, p_friedman = friedmanchisquare(
+                    stats_df_spec["Density_Muscle"],
+                    stats_df_spec["Density_Neuron"],
+                    stats_df_spec["Density_Orphan"],
+                )
             sig_star = (
                 "***" if p_friedman < 0.001 else "**" if p_friedman < 0.01 else "*" if p_friedman < 0.05 else "ns"
             )
             title_str = f"6. BTX Enrichment (Friedman P = {p_friedman:.4g} {sig_star})"
+            
+            try:
+                conover_results, _ = posthoc_conover_iman(stats_df_spec, value_vars)
+                if conover_results is not None:
+                    nmj_comps = []
+                    for _, row in conover_results.iterrows():
+                        g1, g2 = row["group1"], row["group2"]
+                        if "NMJ" in (g1, g2):
+                            other = g2 if g1 == "NMJ" else g1
+                            short_other = "Mus" if "Mus" in other else "Neu" if "Neu" in other else "Orp" if "Orp" in other else other
+                            nmj_comps.append(f"NMJ-{short_other}:{row['sig']}")
+                    if nmj_comps:
+                        title_str += f"\nConover: " + ", ".join(nmj_comps)
+            except Exception:
+                pass
         except ValueError:
             title_str = "6. BTX Enrichment (Insufficient Variance)"
             p_friedman = 1.0
@@ -673,7 +785,7 @@ def build_aggregate_batch_dashboard_figure(master_df, distance_threshold_um, *, 
             x="Zone",
             y="Density",
             hue="Zone",
-            palette=["red", "blue", "gray"],
+            palette=palette,
             legend=False,
             ax=ax_spec,
             showfliers=False,
@@ -711,9 +823,104 @@ def build_aggregate_batch_dashboard_figure(master_df, distance_threshold_um, *, 
             ax_spec.text(0.5, 0.5, "Insufficient images\nfor specificity test", ha="center", va="center")
         ax_spec.set_axis_off()
 
+    ax_abundance.clear()
+    p_friedman_abundance = None
+    conover_abundance_results = None
+    if len(stats_df_spec) >= 1 and {"Area_NMJ_um2", "Area_Muscle_um2", "Area_Neuron_um2", "Area_Orphan_um2",
+                                    "NMJs (Both)", "Near Aneural AChR clusters",
+                                    "Near Neuron-associated BTX signal", "Orphaned"}.issubset(stats_df_spec.columns):
+        total_area = (
+            stats_df_spec["Area_NMJ_um2"] + 
+            stats_df_spec["Area_Muscle_um2"] + 
+            stats_df_spec["Area_Neuron_um2"] + 
+            stats_df_spec["Area_Orphan_um2"]
+        )
+        total_area = np.where(total_area <= 0, 1.0, total_area)
+        
+        stats_df_spec["Abundance_NMJ"] = stats_df_spec["NMJs (Both)"] / total_area * 1000
+        stats_df_spec["Abundance_Muscle"] = stats_df_spec["Near Aneural AChR clusters"] / total_area * 1000
+        stats_df_spec["Abundance_Neuron"] = stats_df_spec["Near Neuron-associated BTX signal"] / total_area * 1000
+        stats_df_spec["Abundance_Orphan"] = stats_df_spec["Orphaned"] / total_area * 1000
+        
+        has_nmj = "Density_NMJ" in stats_df_spec.columns
+        if has_nmj:
+            abundance_vars = ["Abundance_NMJ", "Abundance_Muscle", "Abundance_Neuron", "Abundance_Orphan"]
+            palette_ab = ["red", "green", "blue", "gray"]
+        else:
+            abundance_vars = ["Abundance_Muscle", "Abundance_Neuron", "Abundance_Orphan"]
+            palette_ab = ["red", "blue", "gray"]
+            
+        melt_abundance = stats_df_spec.melt(
+            id_vars=["File"],
+            value_vars=abundance_vars,
+            var_name="Zone",
+            value_name="Abundance",
+        )
+        melt_abundance["Zone"] = melt_abundance["Zone"].str.replace("Abundance_", "", regex=False)
+        
+        sns.boxplot(
+            data=melt_abundance,
+            x="Zone",
+            y="Abundance",
+            hue="Zone",
+            palette=palette_ab,
+            legend=False,
+            ax=ax_abundance,
+            showfliers=False,
+        )
+        sns.stripplot(
+            data=melt_abundance, x="Zone", y="Abundance", color="black", alpha=0.4, jitter=True, ax=ax_abundance
+        )
+        
+        abundance_title_str = "7. Global BTX Abundance (Spots / 1000 μm² total area)"
+        if len(stats_df_spec) >= 2:
+            try:
+                if has_nmj:
+                    _stat_friedman_ab, p_friedman_abundance = friedmanchisquare(
+                        stats_df_spec["Abundance_NMJ"],
+                        stats_df_spec["Abundance_Muscle"],
+                        stats_df_spec["Abundance_Neuron"],
+                        stats_df_spec["Abundance_Orphan"],
+                    )
+                else:
+                    _stat_friedman_ab, p_friedman_abundance = friedmanchisquare(
+                        stats_df_spec["Abundance_Muscle"],
+                        stats_df_spec["Abundance_Neuron"],
+                        stats_df_spec["Abundance_Orphan"],
+                    )
+                sig_star_ab = (
+                    "***" if p_friedman_abundance < 0.001 else "**" if p_friedman_abundance < 0.01 else "*" if p_friedman_abundance < 0.05 else "ns"
+                )
+                abundance_title_str = f"7. Global BTX Abundance (Friedman P = {p_friedman_abundance:.4g} {sig_star_ab})"
+                
+                try:
+                    conover_abundance_results, _ = posthoc_conover_iman(stats_df_spec, abundance_vars)
+                    if conover_abundance_results is not None:
+                        nmj_comps_ab = []
+                        for _, row in conover_abundance_results.iterrows():
+                            g1, g2 = row["group1"], row["group2"]
+                            if "NMJ" in (g1, g2):
+                                other = g2 if g1 == "NMJ" else g1
+                                short_other = "Mus" if "Mus" in other else "Neu" if "Neu" in other else "Orp" if "Orp" in other else other
+                                nmj_comps_ab.append(f"NMJ-{short_other}:{row['sig']}")
+                        if nmj_comps_ab:
+                            abundance_title_str += f"\nConover: " + ", ".join(nmj_comps_ab)
+                except Exception:
+                    pass
+            except ValueError:
+                abundance_title_str = "7. Global BTX Abundance (Insufficient Variance)"
+                p_friedman_abundance = 1.0
+                
+        ax_abundance.set_title(abundance_title_str)
+        ax_abundance.set_ylabel("Spots / 1000 μm²")
+        ax_abundance.set_xlabel("Target Tissue Zone")
+    else:
+        ax_abundance.text(0.5, 0.5, "Insufficient images\nfor abundance test", ha="center", va="center")
+        ax_abundance.set_axis_off()
+
     ax_control = None
     if run_all and "SOURCE_FOLDER" in master_df.columns and "SOURCE_IMAGE" in master_df.columns:
-        ax_control = fig.add_subplot(outer[3, :])
+        ax_control = fig.add_subplot(outer[3, 1])
         per_image = (
             master_df.groupby(["SOURCE_FOLDER", "SOURCE_IMAGE"])
             .agg(total_spots=("is_NMJ", "size"), nmj_spots=("is_NMJ", "sum"))
@@ -758,13 +965,17 @@ def build_aggregate_batch_dashboard_figure(master_df, distance_threshold_um, *, 
         ("panel04_global_innervation", [ax_overlap_kde]),
         ("panel05_global_intensity", [ax_intensity_kde]),
         ("panel06_btx_enrichment", [ax_spec]),
+        ("panel07_btx_abundance", [ax_abundance]),
     ]
     if run_all and ax_control is not None:
-        panel_specs.append(("panel07_per_image_nmj_control", [ax_control]))
+        panel_specs.append(("panel08_per_image_nmj_control", [ax_control]))
 
     meta = {
         "intensity_summary": intensity_summary,
         "friedman_p": float(p_friedman) if p_friedman is not None else None,
         "n_spec_images": int(n_spec_images),
+        "conover_results": conover_results,
+        "friedman_p_abundance": float(p_friedman_abundance) if p_friedman_abundance is not None else None,
+        "conover_abundance_results": conover_abundance_results,
     }
     return fig, panel_specs, meta

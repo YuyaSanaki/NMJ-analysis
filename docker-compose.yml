@@ -14,7 +14,7 @@ services:
     volumes:
       - .:/app
     ports:
-      - "8501:8501"
+      - "8504:8501"
     environment:
       - PYTHONUNBUFFERED=1
       - MPLBACKEND=Agg
@@ -33,7 +33,7 @@ services:
     volumes:
       - .:/app
     ports:
-      - "8501:8501"
+      - "8503:8501"
     environment:
       - PYTHONUNBUFFERED=1
       - MPLBACKEND=Agg
