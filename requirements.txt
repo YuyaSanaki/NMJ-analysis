@@ -6,3 +6,6 @@ streamlit
 aicspylibczi
 scikit-image
 scipy
+nd2
+readlif
+tifffile

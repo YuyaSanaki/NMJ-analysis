@@ -979,3 +979,385 @@ def build_aggregate_batch_dashboard_figure(master_df, distance_threshold_um, *, 
         "conover_abundance_results": conover_abundance_results,
     }
     return fig, panel_specs, meta
+
+
+# --- MULTI-FORMAT IMAGE READING UTILITIES ---
+
+SUPPORTED_EXTENSIONS = ('.czi', '.tif', '.tiff', '.lif', '.nd2')
+
+
+def collect_image_jobs(target_dirs):
+    """Recursively search for supported confocal and TIFF image files in target_dirs.
+
+    Returns sorted list of (abs_dirpath, filename) pairs.
+    """
+    out = []
+    for target_d in target_dirs:
+        root = os.path.normpath(os.path.abspath(target_d))
+        if not os.path.isdir(root):
+            continue
+        for dirpath, dirnames, filenames in os.walk(root):
+            # Exclude hidden directories in-place so os.walk doesn't traverse them
+            dirnames[:] = [d for d in dirnames if not d.startswith('.')]
+            for f in filenames:
+                if f.lower().endswith(SUPPORTED_EXTENSIONS):
+                    out.append((os.path.normpath(os.path.abspath(dirpath)), f))
+    out.sort(key=lambda t: (t[0].lower(), t[1].lower()))
+    return out
+
+
+def get_confocal_metadata(path):
+    """Unified function to extract channel count, pixel size (um/pixel), and YX shape.
+
+    Returns (num_channels, pixel_size_um, shape_yx).
+    """
+    ext = os.path.splitext(path)[1].lower()
+    if ext == '.czi':
+        import aicspylibczi
+        czi = aicspylibczi.CziFile(path)
+        dims = czi.get_dims_shape()[0]
+        cc = dims.get("C", [0, 1])
+        num_channels = int(cc[1]) - int(cc[0])
+
+        pixel_size_um = 1.0
+        try:
+            for dist in czi.meta.findall(".//Distance"):
+                if dist.attrib.get("Id") == "X":
+                    val = dist.find("Value")
+                    if val is not None:
+                        pixel_size_um = float(val.text) * 1e6
+                        break
+        except Exception:
+            pass
+
+        shape_yx = None
+        y_rng = dims.get("Y")
+        x_rng = dims.get("X")
+        if y_rng is not None and x_rng is not None and len(y_rng) >= 2 and len(x_rng) >= 2:
+            shape_yx = (int(y_rng[1]) - int(y_rng[0]), int(x_rng[1]) - int(x_rng[0]))
+        return num_channels, pixel_size_um, shape_yx
+
+    elif ext == '.nd2':
+        import nd2
+        with nd2.ND2File(path) as ndfile:
+            sizes = ndfile.sizes
+            num_channels = sizes.get('C', 1)
+            pixel_size_um = 1.0
+            try:
+                vx = ndfile.voxel_size()
+                if vx is not None and hasattr(vx, 'x'):
+                    pixel_size_um = float(vx.x)
+            except Exception:
+                pass
+            shape_yx = (sizes.get('Y', 512), sizes.get('X', 512))
+            return num_channels, pixel_size_um, shape_yx
+
+    elif ext == '.lif':
+        import readlif.reader
+        lif_file = readlif.reader.LifFile(path)
+        if not lif_file.img_list:
+            raise ValueError(f"No image series found in LIF file: {path}")
+        lif_image = lif_file.get_image(0)
+        dims = lif_image.info['dims']
+        num_channels = dims.c
+
+        pixel_size_um = 1.0
+        try:
+            scale_tuple = lif_image.info.get('scale')
+            if scale_tuple and scale_tuple[0] > 0:
+                pixel_size_um = 1.0 / float(scale_tuple[0])
+        except Exception:
+            pass
+        shape_yx = (dims.y, dims.x)
+        return num_channels, pixel_size_um, shape_yx
+
+    elif ext in ('.tif', '.tiff'):
+        import tifffile
+        with tifffile.TiffFile(path) as tif:
+            series = tif.series[0]
+            shape = list(series.shape)
+            ndim = len(shape)
+            axes = getattr(series, 'axes', None)
+
+            if not axes:
+                if ndim == 2:
+                    num_channels = 1
+                    shape_yx = tuple(shape)
+                elif ndim == 3:
+                    if shape[0] <= 10 and shape[0] < shape[1] and shape[0] < shape[2]:
+                        num_channels = shape[0]
+                        shape_yx = (shape[1], shape[2])
+                    elif shape[2] <= 10 and shape[2] < shape[0] and shape[2] < shape[1]:
+                        num_channels = shape[2]
+                        shape_yx = (shape[0], shape[1])
+                    else:
+                        num_channels = 1
+                        shape_yx = (shape[1], shape[2])
+                elif ndim == 4:
+                    dim0, dim1, h, w = shape[0], shape[1], shape[2], shape[3]
+                    if dim0 < dim1:
+                        num_channels = dim0
+                    else:
+                        num_channels = dim1
+                    shape_yx = (h, w)
+                else:
+                    num_channels = 1
+                    shape_yx = (shape[-2], shape[-1])
+            else:
+                c_idx = axes.find('C')
+                y_idx = axes.find('Y')
+                x_idx = axes.find('X')
+                num_channels = shape[c_idx] if c_idx != -1 else 1
+                h = shape[y_idx] if y_idx != -1 else shape[-2]
+                w = shape[x_idx] if x_idx != -1 else shape[-1]
+                shape_yx = (h, w)
+
+            pixel_size_um = 1.0
+            try:
+                page = tif.pages[0]
+                tags = page.tags
+                if 'XResolution' in tags and 'ResolutionUnit' in tags:
+                    x_res = tags['XResolution'].value
+                    unit = tags['ResolutionUnit'].value
+                    if isinstance(x_res, tuple) and len(x_res) == 2 and x_res[1] > 0:
+                        res_val = x_res[0] / x_res[1]
+                    else:
+                        res_val = float(x_res)
+
+                    if res_val > 0:
+                        if unit == 2:
+                            pixel_size_um = 25400.0 / res_val
+                        elif unit == 3:
+                            pixel_size_um = 10000.0 / res_val
+                        else:
+                            pixel_size_um = 1.0 / res_val
+            except Exception:
+                pass
+            return num_channels, pixel_size_um, shape_yx
+
+    else:
+        raise ValueError(f"Unsupported file format: {ext}")
+
+
+def _czi_channel_zmax_2d(czi, c_idx, dims0):
+    """Return a single (Y, X) plane as Z-max projection with one Z plane in RAM at a time."""
+    z_rng = dims0.get("Z", (0, 1))
+    z0, z1 = int(z_rng[0]), int(z_rng[1])
+    if z1 - z0 <= 1:
+        img, _ = czi.read_image(C=c_idx)
+        arr = np.squeeze(np.asarray(img))
+        while arr.ndim > 2:
+            arr = np.max(arr, axis=0)
+        return arr.copy() if not arr.flags.owndata else arr
+
+    acc = None
+    for zi in range(z0, z1):
+        img, _ = czi.read_image(C=c_idx, Z=zi)
+        plane = np.squeeze(np.asarray(img))
+        while plane.ndim > 2:
+            plane = np.max(plane, axis=0)
+        if acc is None:
+            acc = plane.copy()
+        else:
+            np.maximum(acc, plane, out=acc)
+        del img
+    return acc
+
+
+def load_confocal_image(path, channel_indices=None):
+    """Unified function to load confocal or TIFF Z-stacks as 2D Z-max projections per channel.
+
+    If channel_indices is set, returns dictionary {c_idx: 2D array}.
+    Else returns 3D numpy array of shape (C, Y, X).
+    """
+    ext = os.path.splitext(path)[1].lower()
+
+    if ext == '.czi':
+        import aicspylibczi
+        czi = aicspylibczi.CziFile(path)
+        try:
+            if channel_indices is not None:
+                wanted = list(dict.fromkeys(int(c) for c in channel_indices))
+                try:
+                    dims0 = czi.get_dims_shape()[0]
+                    channels = {}
+                    for c_idx in wanted:
+                        channels[c_idx] = _czi_channel_zmax_2d(czi, c_idx, dims0)
+                    return channels
+                except Exception:
+                    pass
+
+            img, _ = czi.read_image()
+            img_sq = np.squeeze(img)
+            if img_sq.ndim == 4:
+                img_sq = np.max(img_sq, axis=1)
+            if img_sq.ndim < 3:
+                img_sq = np.expand_dims(img_sq, axis=0)
+            if img_sq.ndim == 3 and img_sq.shape[-1] <= 10 and img_sq.shape[-1] < img_sq.shape[0]:
+                img_sq = np.moveaxis(img_sq, -1, 0)
+
+            if channel_indices is not None:
+                wanted = list(dict.fromkeys(int(c) for c in channel_indices))
+                return {c_idx: img_sq[c_idx].copy() for c_idx in wanted}
+            return img_sq
+        finally:
+            if hasattr(czi, "close"):
+                try:
+                    czi.close()
+                except Exception:
+                    pass
+
+    elif ext == '.nd2':
+        import nd2
+        with nd2.ND2File(path) as ndfile:
+            axes = ndfile.axes
+            sizes = ndfile.sizes
+            data = ndfile.to_dask()
+
+            c_pos = axes.find('C')
+            z_pos = axes.find('Z')
+
+            if channel_indices is not None:
+                wanted = list(dict.fromkeys(int(c) for c in channel_indices))
+                channels = {}
+                for c_idx in wanted:
+                    idx = [slice(None)] * len(axes)
+                    if c_pos != -1:
+                        idx[c_pos] = c_idx
+                    chan_data = data[tuple(idx)]
+
+                    new_axes = axes.replace('C', '')
+                    new_z_pos = new_axes.find('Z')
+                    if new_z_pos != -1:
+                        chan_2d = chan_data.max(axis=new_z_pos).compute()
+                    else:
+                        chan_2d = chan_data.compute()
+
+                    chan_2d = np.squeeze(np.asarray(chan_2d))
+                    channels[c_idx] = chan_2d
+                return channels
+            else:
+                if z_pos != -1:
+                    projected = data.max(axis=z_pos).compute()
+                else:
+                    projected = data.compute()
+
+                remaining_axes = axes.replace('Z', '')
+                c_pos_new = remaining_axes.find('C')
+                y_pos_new = remaining_axes.find('Y')
+                x_pos_new = remaining_axes.find('X')
+
+                order = []
+                if c_pos_new != -1:
+                    order.append(c_pos_new)
+                else:
+                    projected = np.expand_dims(projected, axis=0)
+                    order.append(0)
+                    y_pos_new += 1
+                    x_pos_new += 1
+
+                order.append(y_pos_new if y_pos_new != -1 else len(order))
+                order.append(x_pos_new if x_pos_new != -1 else len(order))
+
+                final_arr = np.transpose(projected, order)
+                return np.squeeze(final_arr) if final_arr.ndim > 3 else final_arr
+
+    elif ext == '.lif':
+        import readlif.reader
+        lif_file = readlif.reader.LifFile(path)
+        if not lif_file.img_list:
+            raise ValueError(f"No image series found in LIF file: {path}")
+        lif_image = lif_file.get_image(0)
+        dims = lif_image.info['dims']
+        num_slices = dims.z
+        num_channels = dims.c
+
+        if channel_indices is not None:
+            wanted = list(dict.fromkeys(int(c) for c in channel_indices))
+            channels = {}
+            for c_idx in wanted:
+                acc = None
+                for zi in range(num_slices):
+                    img = lif_image.get_frame(z=zi, c=c_idx)
+                    plane = np.array(img)
+                    if acc is None:
+                        acc = plane.copy()
+                    else:
+                        np.maximum(acc, plane, out=acc)
+                channels[c_idx] = acc
+            return channels
+        else:
+            all_ch = []
+            for c_idx in range(num_channels):
+                acc = None
+                for zi in range(num_slices):
+                    img = lif_image.get_frame(z=zi, c=c_idx)
+                    plane = np.array(img)
+                    if acc is None:
+                        acc = plane.copy()
+                    else:
+                        np.maximum(acc, plane, out=acc)
+                all_ch.append(acc)
+            return np.stack(all_ch, axis=0)
+
+    elif ext in ('.tif', '.tiff'):
+        import tifffile
+        with tifffile.TiffFile(path) as tif:
+            series = tif.series[0]
+            data = series.asarray()
+            ndim = data.ndim
+            axes = getattr(series, 'axes', None)
+
+            if not axes:
+                if ndim == 2:
+                    std_data = data[np.newaxis, np.newaxis, :, :]
+                elif ndim == 3:
+                    shape = data.shape
+                    if shape[0] <= 10 and shape[0] < shape[1] and shape[0] < shape[2]:
+                        std_data = data[:, np.newaxis, :, :]
+                    elif shape[2] <= 10 and shape[2] < shape[0] and shape[2] < shape[1]:
+                        std_data = np.moveaxis(data, -1, 0)[:, np.newaxis, :, :]
+                    else:
+                        std_data = data[np.newaxis, :, :, :]
+                elif ndim == 4:
+                    dim0, dim1 = data.shape[0], data.shape[1]
+                    if dim0 < dim1:
+                        std_data = data
+                    else:
+                        std_data = np.moveaxis(data, 1, 0)
+                else:
+                    std_data = data.reshape((-1, 1, data.shape[-2], data.shape[-1]))
+            else:
+                c_idx = axes.find('C')
+                z_idx = axes.find('Z')
+                y_idx = axes.find('Y')
+                x_idx = axes.find('X')
+
+                src_indices = [c_idx, z_idx, y_idx, x_idx]
+                temp_data = data.copy()
+                final_axes_order = []
+                for i, idx in enumerate(src_indices):
+                    if idx == -1:
+                        temp_data = np.expand_dims(temp_data, axis=-1)
+                        final_axes_order.append(temp_data.ndim - 1)
+                    else:
+                        final_axes_order.append(idx)
+                std_data = np.transpose(temp_data, final_axes_order)
+
+            if channel_indices is not None:
+                wanted = list(dict.fromkeys(int(c) for c in channel_indices))
+                channels = {}
+                for c_idx in wanted:
+                    if c_idx < std_data.shape[0]:
+                        chan_2d = np.max(std_data[c_idx], axis=0)
+                        channels[c_idx] = chan_2d
+                    else:
+                        channels[c_idx] = np.zeros((std_data.shape[2], std_data.shape[3]))
+                return channels
+            else:
+                all_ch = []
+                for c_idx in range(std_data.shape[0]):
+                    chan_2d = np.max(std_data[c_idx], axis=0)
+                    all_ch.append(chan_2d)
+                return np.stack(all_ch, axis=0)
+

@@ -4,11 +4,15 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 import streamlit as st
-import aicspylibczi
 from skimage.feature import blob_dog
 from skimage.filters import gaussian, threshold_otsu
 from scipy.ndimage import distance_transform_edt, zoom
 from skimage.exposure import rescale_intensity
+from nmj_master_dashboard import (
+    collect_image_jobs,
+    get_confocal_metadata,
+    load_confocal_image,
+)
 
 BTX_SIGNAL_CLASS_ORDER = ("NMJ", "Aneural AChR clusters", "Neuron-associated BTX signal", "Orphaned")
 BTX_SIGNAL_CLASS_PALETTE = {
@@ -296,145 +300,29 @@ def draw_proximity_joint(
 
 st.set_page_config(page_title="NMJ Pipeline", layout="wide")
 
-st.title("🔬 Single-Image NMJ Pipeline (CZI)")
-st.markdown("Select a single `.czi` file to automatically detect spots (DoG) and compute distance maps from raw fluorescence data.")
+st.title("🔬 Single-Image NMJ Pipeline (Multi-Format)")
+st.markdown("Select a single image file (.czi, .lif, .nd2, .tif, .tiff) to automatically detect spots (DoG) and compute distance maps from raw fluorescence data.")
 
-# --- 1. Folder & File Selection ---
+# --- 1. Recursive File Selection ---
 os.makedirs(DATA_ROOT, exist_ok=True)
-base_dir = DATA_ROOT
-folders = [
-    d
-    for d in os.listdir(base_dir)
-    if os.path.isdir(os.path.join(base_dir, d)) and not d.startswith(".") and d != "__pycache__"
-]
+all_jobs = collect_image_jobs([DATA_ROOT])
 
-if not folders:
-    st.warning(f"No dataset folders inside `{base_dir}/`. Add a subfolder with `.czi` files.")
+if not all_jobs:
+    st.warning(f"No supported confocal or TIFF images found inside `{DATA_ROOT}/` or its subfolders.")
     st.stop()
 
-selected_folder = st.selectbox("📂 Select Dataset Folder", sorted(folders))
-folder_path = os.path.join(base_dir, selected_folder)
-files_in_folder = os.listdir(folder_path)
+# Build relative path options
+display_paths = [os.path.relpath(os.path.join(d, f), DATA_ROOT) for d, f in all_jobs]
+selected_display_path = st.selectbox("🔬 Select Image File", display_paths)
 
-czi_files = [f for f in files_in_folder if f.endswith(".czi")]
-
-if not czi_files:
-    st.error(f"No `.czi` files found in '{selected_folder}'. Please ensure your raw confocal data is there.")
-    st.stop()
-
-selected_czi = st.selectbox("🔬 Select CZI File", czi_files)
+# Extract directories and paths
+selected_idx = display_paths.index(selected_display_path)
+folder_path, selected_czi = all_jobs[selected_idx]
 czi_path = os.path.join(folder_path, selected_czi)
 
-# --- 2. Load CZI and Configure Channels ---
-
-
-@st.cache_data(show_spinner=False)
-def fast_czi_meta(path):
-    """Channel count and X pixel size from CZI metadata only (no image planes read)."""
-    czi = None
-    try:
-        czi = aicspylibczi.CziFile(path)
-        dims = czi.get_dims_shape()[0]
-        cc = dims.get("C", [0, 4])
-        num_channels = int(cc[1]) - int(cc[0])
-
-        pixel_size_um = 1.0
-        try:
-            for dist in czi.meta.findall(".//Distance"):
-                if dist.attrib.get("Id") == "X":
-                    val = dist.find("Value")
-                    if val is not None:
-                        pixel_size_um = float(val.text) * 1e6
-                        break
-        except Exception:
-            pass
-
-        shape_yx = None
-        y_rng = dims.get("Y")
-        x_rng = dims.get("X")
-        if y_rng is not None and x_rng is not None and len(y_rng) >= 2 and len(x_rng) >= 2:
-            try:
-                shape_yx = (int(y_rng[1]) - int(y_rng[0]), int(x_rng[1]) - int(x_rng[0]))
-            except Exception:
-                pass
-
-        return num_channels, pixel_size_um, shape_yx
-    finally:
-        if czi is not None and hasattr(czi, "close"):
-            try:
-                czi.close()
-            except Exception:
-                pass
-
-
-def _czi_channel_zmax_2d(czi, c_idx, dims0):
-    """Return a single (Y, X) plane as Z-max projection with *one Z plane in RAM at a time*.
-
-    ``read_image(C=...)`` loads the full Z stack for that channel; streaming Z reduces
-    peak memory on deep stacks (critical for Docker / Streamlit OOM limits).
-    """
-    z_rng = dims0.get("Z", (0, 1))
-    z0, z1 = int(z_rng[0]), int(z_rng[1])
-    if z1 - z0 <= 1:
-        img, _ = czi.read_image(C=c_idx)
-        arr = np.squeeze(np.asarray(img))
-        while arr.ndim > 2:
-            arr = np.max(arr, axis=0)
-        return arr.copy() if not arr.flags.owndata else arr
-    acc = None
-    for zi in range(z0, z1):
-        img, _ = czi.read_image(C=c_idx, Z=zi)
-        plane = np.squeeze(np.asarray(img))
-        while plane.ndim > 2:
-            plane = np.max(plane, axis=0)
-        if acc is None:
-            acc = plane.copy()
-        else:
-            np.maximum(acc, plane, out=acc)
-        del img
-    return acc
-
-
-def load_czi_image(path, channel_indices=None):
-    """Load CZI as 2D Z-max planes per channel.
-
-    When ``channel_indices`` is set, only those channels are read from disk (same strategy
-    as the batch app), avoiding loading every channel of large multi-channel files into RAM.
-    """
-    czi = None
-    try:
-        czi = aicspylibczi.CziFile(path)
-
-        if channel_indices is not None:
-            wanted = list(dict.fromkeys(int(c) for c in channel_indices))
-            try:
-                dims0 = czi.get_dims_shape()[0]
-                channels = {}
-                for c_idx in wanted:
-                    channels[c_idx] = _czi_channel_zmax_2d(czi, c_idx, dims0)
-                return channels
-            except Exception:
-                pass
-
-        img, _ = czi.read_image()
-        img_sq = np.squeeze(img)
-        if img_sq.ndim == 4:
-            img_sq = np.max(img_sq, axis=1)
-        if img_sq.ndim < 3:
-            img_sq = np.expand_dims(img_sq, axis=0)
-        if img_sq.ndim == 3 and img_sq.shape[-1] <= 10 and img_sq.shape[-1] < img_sq.shape[0]:
-            img_sq = np.moveaxis(img_sq, -1, 0)
-
-        if channel_indices is not None:
-            wanted = list(dict.fromkeys(int(c) for c in channel_indices))
-            return {c_idx: img_sq[c_idx].copy() for c_idx in wanted}
-        return img_sq
-    finally:
-        if czi is not None and hasattr(czi, "close"):
-            try:
-                czi.close()
-            except Exception:
-                pass
+# --- 2. Shared Multi-Format Loader Mapping ---
+fast_czi_meta = get_confocal_metadata
+load_czi_image = load_confocal_image
 
 
 def compute_sigma_bounds_px(min_sigma_um, max_sigma_um, pixel_size_um, image_shape):
@@ -919,7 +807,8 @@ if st.button("🚀 Process Pipeline", type="primary"):
                     "— tests whether NMJs are closer to the neuron signal than muscle-only (aneural) clusters "
                     "(smaller edge distance to neuron mask)."
                 )
-            out_csv = os.path.join(folder_path, f"{selected_czi.replace('.czi', '')}_analysis.csv")
+            file_stem = os.path.splitext(selected_czi)[0]
+            out_csv = os.path.join(folder_path, f"{file_stem}_analysis.csv")
             df_spots.to_csv(out_csv, index=False)
 
             # Normalize images for composite display using percentiles (Auto Contrast)
@@ -1086,8 +975,8 @@ if st.button("🚀 Process Pipeline", type="primary"):
 
             st.pyplot(fig)
             
-            # Save visual
-            out_img = os.path.join(folder_path, f"{selected_czi.replace('.czi', '')}_NMJ_Plot.png")
+            file_stem = os.path.splitext(selected_czi)[0]
+            out_img = os.path.join(folder_path, f"{file_stem}_NMJ_Plot.png")
             fig.savefig(out_img, bbox_inches="tight")
             fig.clf()
             plt.close(fig)

@@ -4,7 +4,6 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 import streamlit as st
-import aicspylibczi
 import gc
 from skimage.feature import blob_dog
 from skimage.filters import gaussian, threshold_otsu
@@ -29,6 +28,10 @@ from nmj_master_dashboard import (
     save_all_folders_summary_png,
     _export_figure_panels_to_pdfs,
     build_aggregate_batch_dashboard_figure,
+    SUPPORTED_EXTENSIONS,
+    collect_image_jobs,
+    get_confocal_metadata,
+    load_confocal_image,
 )
 
 # Each subdirectory under this path is one dataset folder (contains `.czi` files).
@@ -56,22 +59,7 @@ def same_dir(a, b):
     return os.path.normpath(os.path.abspath(a)) == os.path.normpath(os.path.abspath(b))
 
 
-def collect_czi_jobs(target_dirs):
-    """
-    All .czi files under each target directory, including nested subfolders (not only listdir one level).
-    Returns sorted (abs_dirpath, filename) pairs; abs_dirpath is the folder that should receive per-image outputs.
-    """
-    out = []
-    for target_d in target_dirs:
-        root = os.path.normpath(os.path.abspath(target_d))
-        if not os.path.isdir(root):
-            continue
-        for dirpath, _dirnames, filenames in os.walk(root):
-            for f in filenames:
-                if f.lower().endswith(".czi"):
-                    out.append((os.path.normpath(os.path.abspath(dirpath)), f))
-    out.sort(key=lambda t: (t[0].lower(), t[1].lower()))
-    return out
+collect_czi_jobs = collect_image_jobs
 
 
 st.set_page_config(page_title="NMJ Pipeline", layout="wide")
@@ -81,54 +69,28 @@ st.markdown("Select a folder to batch-process all `.czi` files automatically.")
 
 # --- 1. Folder & File Selection ---
 os.makedirs(DATA_ROOT, exist_ok=True)
-base_dir = DATA_ROOT
-folders = [
-    d
-    for d in os.listdir(base_dir)
-    if os.path.isdir(os.path.join(base_dir, d)) and not d.startswith(".") and d != "__pycache__"
-]
 
-if not folders:
-    st.warning(f"No dataset folders inside `{base_dir}/`. Add a subfolder with `.czi` files.")
+# Discover all image files recursively under DATA_ROOT
+all_jobs_global = collect_image_jobs([DATA_ROOT])
+if not all_jobs_global:
+    st.warning(f"No supported confocal or TIFF image files found inside `{DATA_ROOT}/` or its subfolders.")
     st.stop()
 
-selected_folder = st.selectbox("📂 Select Dataset Folder", sorted(folders))
-folder_path = os.path.join(base_dir, selected_folder)
-files_in_folder = os.listdir(folder_path)
+# Get unique directories containing supported files (relative to DATA_ROOT)
+folders_set = set(os.path.relpath(d, DATA_ROOT) for d, _ in all_jobs_global)
+folders = sorted(list(folders_set))
 
-czi_files = [f for f in files_in_folder if f.endswith(".czi")]
+selected_folder = st.selectbox("📂 Select Dataset Folder", folders)
+folder_path = os.path.join(DATA_ROOT, selected_folder)
 
-if not czi_files:
-    st.error(f"No `.czi` files found in '{selected_folder}'. Please ensure your raw confocal data is there.")
-    st.stop()
+# Supported files in the selected folder (non-recursively for the UI configuration)
+czi_files = [f for d, f in all_jobs_global if same_dir(d, folder_path)]
 
 # --- 2. Extract Metadata & Config for Batch ---
 @st.cache_data(show_spinner=False)
 def fast_czi_meta(path):
-    czi = None
-    try:
-        czi = aicspylibczi.CziFile(path)
-        dims = czi.get_dims_shape()[0]
-        cc = dims.get('C', [0, 4])
-        num_channels = cc[1] - cc[0]
-
-        pixel_size_um = 1.0  # Default fallback
-        try:
-            for dist in czi.meta.findall('.//Distance'):
-                if dist.attrib.get('Id') == 'X':
-                    val = dist.find('Value')
-                    if val is not None:
-                        pixel_size_um = float(val.text) * 1e6
-                        break
-        except Exception:
-            pass
-        return num_channels, pixel_size_um
-    finally:
-        if czi is not None and hasattr(czi, "close"):
-            try:
-                czi.close()
-            except Exception:
-                pass
+    num_channels, pixel_size_um, _ = get_confocal_metadata(path)
+    return num_channels, pixel_size_um
 
 st.subheader("⚙️ Batch Channel Mapping")
 
@@ -240,85 +202,8 @@ if len(czi_files) > 0:
 st.divider()
 
 
-def _czi_channel_zmax_2d(czi, c_idx, dims0):
-    """Return a single (Y, X) plane as Z-max projection with *one Z plane in RAM at a time*.
-
-    ``read_image(C=...)`` loads the full Z stack for that channel (e.g. 25×2576×2576 ≈ 316 MB
-    for `0714M-HF-03.czi`), while ``DesBTXNEFM`` tiles use Z=13 (~164 MB). Deep Z stacks alone
-    explain why the former can OOM Docker/Streamlit even when XY matches. Streaming Z reduces
-    peak read memory to ~one plane (~13 MB for 2576² uint16) plus the accumulator.
-    """
-    z_rng = dims0.get("Z", (0, 1))
-    z0, z1 = int(z_rng[0]), int(z_rng[1])
-    if z1 - z0 <= 1:
-        img, _ = czi.read_image(C=c_idx)
-        arr = np.squeeze(np.asarray(img))
-        while arr.ndim > 2:
-            arr = np.max(arr, axis=0)
-        return arr.copy() if not arr.flags.owndata else arr
-
-    acc = None
-    for zi in range(z0, z1):
-        img, _ = czi.read_image(C=c_idx, Z=zi)
-        plane = np.squeeze(np.asarray(img))
-        while plane.ndim > 2:
-            plane = np.max(plane, axis=0)
-        if acc is None:
-            acc = plane.copy()
-        else:
-            np.maximum(acc, plane, out=acc)
-        del img
-    return acc
-
-
-# Removed st.cache_data decorator to prevent catastrophic Out-Of-Memory (OOM) accumulation during massive multi-GB dataset runs
-def load_czi_image(path, channel_indices=None):
-    """Load a CZI image as 2D channel arrays.
-
-    When ``channel_indices`` is provided, only the requested channels are read
-    from disk and projected (Z-max). This dramatically reduces peak memory on
-    multi-GB / multi-channel CZIs, which is the dominant driver of the
-    container OOM-kill (exit 137) during ``Run Batch (ALL Folders)``. The
-    legacy 3D ``(C, Y, X)`` array path is kept as a safe fallback for
-    pathological CZI layouts where per-channel reads fail.
-    """
-    czi = None
-    try:
-        czi = aicspylibczi.CziFile(path)
-
-        if channel_indices is not None:
-            wanted = list(dict.fromkeys(int(c) for c in channel_indices))
-            try:
-                dims0 = czi.get_dims_shape()[0]
-                channels = {}
-                for c_idx in wanted:
-                    channels[c_idx] = _czi_channel_zmax_2d(czi, c_idx, dims0)
-                return channels
-            except Exception:
-                # Fall through to the legacy single-shot read on incompatible CZIs.
-                pass
-
-        img, _ = czi.read_image()
-        img_sq = np.squeeze(img)
-        if img_sq.ndim == 4:
-            img_sq = np.max(img_sq, axis=1)
-        if img_sq.ndim < 3:
-            img_sq = np.expand_dims(img_sq, axis=0)
-        # Detect (Y, X, C) layout: last axis small (≤10, typical channel count) and smaller than first
-        if img_sq.ndim == 3 and img_sq.shape[-1] <= 10 and img_sq.shape[-1] < img_sq.shape[0]:
-            img_sq = np.moveaxis(img_sq, -1, 0)
-
-        if channel_indices is not None:
-            wanted = list(dict.fromkeys(int(c) for c in channel_indices))
-            # .copy() detaches each plane so the giant parent volume can be freed.
-            return {c_idx: img_sq[c_idx].copy() for c_idx in wanted}
-        return img_sq
-    finally:
-        if czi is not None and hasattr(czi, "close"):
-            try:
-                czi.close()
-            except Exception:
-                pass
+# --- 2. Shared Multi-Format Loader Mapping ---
+load_czi_image = load_confocal_image
 
 
 def compute_sigma_bounds_px(min_sigma_um, max_sigma_um, pixel_size_um, image_shape):
@@ -888,7 +773,8 @@ if run_current or run_all:
             dens_n = (c_n_only / area_n_um2 * 1000) if area_n_um2 > 0 else 0.0
             dens_o = (c_orphan / area_o_um2 * 1000) if area_o_um2 > 0 else 0.0
 
-            out_csv = os.path.join(current_d, f"{czi_file.replace('.czi', '')}{_thr_tag}_analysis.csv")
+            file_stem = os.path.splitext(czi_file)[0]
+            out_csv = os.path.join(current_d, f"{file_stem}{_thr_tag}_analysis.csv")
             df_spots.to_csv(out_csv, index=False)
 
             # Tag source file and stream to master CSV to avoid RAM blow-up on large all-folder runs
@@ -1133,8 +1019,8 @@ if run_current or run_all:
                     ax_comp_arrows.annotate('', xy=(target_x, target_y), xytext=(start_x, start_y),
                                       arrowprops=dict(arrowstyle="-|>", color='white', lw=1.5))
 
-            # Save visual directly to disk, completely bypassing the Streamlit frontend DOM to prevent DOM payload crash
-            out_img = os.path.join(current_d, f"{czi_file.replace('.czi', '')}{_thr_tag}_NMJ_Plot.png")
+            file_stem = os.path.splitext(czi_file)[0]
+            out_img = os.path.join(current_d, f"{file_stem}{_thr_tag}_NMJ_Plot.png")
             fig.savefig(out_img, bbox_inches="tight")
             # Figure teardown runs in ``finally`` (single ``plt.close(fig)``, thread-safe vs ``close('all')``).
             
