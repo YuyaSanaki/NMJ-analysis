@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import streamlit as st
 import gc
+from datetime import datetime
 from skimage.feature import blob_dog
 from skimage.filters import gaussian, threshold_otsu
 from scipy.ndimage import distance_transform_edt, zoom
@@ -34,6 +35,14 @@ from nmj_master_dashboard import (
     get_confocal_metadata,
     load_confocal_image,
     total_image_area_um2_from_metadata,
+)
+
+from nmj_run_output import (
+    create_run_output_dir,
+    mirror_dataset_output_path,
+    render_streamlit_download_section,
+    save_run_config_files,
+    snapshot_channel_mappings,
 )
 
 # Each subdirectory under this path is one dataset folder (contains `.czi` files).
@@ -416,7 +425,7 @@ run_all = col_run2.button("🚀 Run Batch Analysis (ALL Folders)", type="primary
 save_pngs = st.checkbox(
     "Save per-image NMJ_Plot PNGs during batch",
     value=True,
-    help="When off, no *_NMJ_Plot.png (including Raw BTX | Cleaned BTX) is written—only CSVs and master summaries. "
+    help="When off, no *_NMJ_Plot.png (including Raw BTX | Cleaned BTX) is written under the run output folder—only CSVs and master summaries. "
     "Turn off to reduce memory and speed up ALL-folder runs.",
 )
 
@@ -437,28 +446,58 @@ if run_current or run_all:
     
     target_dirs = [folder_path] if run_current else [os.path.join(DATA_ROOT, d) for d in folders]
 
-    # Recursive discovery: .czi in subfolders (e.g. Data/Cond1/slide/1.czi) are included; listdir() missed them
-    # so per-image *_analysis.csv / *_NMJ_Plot.png never appeared next to the files the user was checking.
+    # Recursive discovery: .czi in subfolders (e.g. Data/Cond1/slide/1.czi) are included.
+    # Per-image CSV/PNG are written under output/<run_timestamp>/<dataset_folder>/.
     all_target_czis = collect_czi_jobs(target_dirs)
 
     # Embed the sensitivity mode in output filenames so Conservative and High runs
     # save to separate files and neither overwrites the other.
     _thr_tag = f"_thr{auto_thr_sensitivity}" if auto_threshold else ""
 
-    if run_all:
-        # Aggregate artifacts for "ALL Folders" live next to dataset folders under `data/`.
-        all_folders_dir = os.path.abspath(DATA_ROOT)
-        master_csv = os.path.join(all_folders_dir, f"ALL_FOLDERS_MASTER_RESULTS{_thr_tag}.csv")
-        master_png = os.path.join(all_folders_dir, f"ALL_FOLDERS_SUMMARY{_thr_tag}.png")
-        summary_table_csv = os.path.join(all_folders_dir, f"ALL_FOLDERS_SUMMARY_TABLE{_thr_tag}.csv")
-    else:
-        master_csv = os.path.join(folder_path, f"BATCH_MASTER_RESULTS{_thr_tag}.csv")
-        master_png = os.path.join(folder_path, f"BATCH_SUMMARY{_thr_tag}.png")
-        summary_table_csv = None
+    data_root_abs = os.path.abspath(DATA_ROOT)
+    unique_target_dirs = sorted({os.path.abspath(d) for d, _ in all_target_czis})
 
-    # Start fresh for this run so append-mode streaming does not duplicate previous runs.
-    if os.path.exists(master_csv):
-        os.remove(master_csv)
+    run_dir = create_run_output_dir()
+    channel_snapshot = snapshot_channel_mappings(
+        data_root_abs,
+        unique_target_dirs,
+        active_folder_path=os.path.abspath(folder_path) if run_current else None,
+        active_file_configs=file_configs if run_current else None,
+    )
+    run_config = {
+        "run_id": os.path.basename(run_dir),
+        "started_at": datetime.now().isoformat(timespec="seconds"),
+        "completed_at": None,
+        "mode": "all_folders" if run_all else "current_folder",
+        "selected_folder": selected_folder,
+        "threshold_tag": _thr_tag,
+        "save_pngs": bool(save_pngs),
+        "parameters": {
+            "min_diameter_um": float(min_diameter_um),
+            "max_diameter_um": float(max_diameter_um),
+            "auto_threshold": bool(auto_threshold),
+            "auto_thr_sensitivity": auto_thr_sensitivity if auto_threshold else None,
+            "threshold": float(threshold) if not auto_threshold else None,
+            "dog_sigma_ratio_manual": float(dog_sigma_ratio_manual) if not auto_threshold else None,
+            "dog_sigma_ratio": float(dog_sigma_ratio),
+            "auto_bg": bool(auto_bg),
+            "btx_bg_radius_um": float(btx_bg_radius_um),
+            "m_thresh_mult": float(m_thresh_mult),
+            "n_thresh_mult": float(n_thresh_mult),
+            "distance_threshold_um": float(distance_threshold_um),
+        },
+    }
+    save_run_config_files(run_dir, run_config, channel_snapshot)
+    st.info(f"Writing outputs to `{run_dir}` (channel mapping JSON stays in `data/`).")
+
+    if run_all:
+        master_csv = os.path.join(run_dir, f"ALL_FOLDERS_MASTER_RESULTS{_thr_tag}.csv")
+        master_png = os.path.join(run_dir, f"ALL_FOLDERS_SUMMARY{_thr_tag}.png")
+        summary_table_csv = os.path.join(run_dir, f"ALL_FOLDERS_SUMMARY_TABLE{_thr_tag}.csv")
+    else:
+        master_csv = os.path.join(run_dir, f"BATCH_MASTER_RESULTS{_thr_tag}.csv")
+        master_png = os.path.join(run_dir, f"BATCH_SUMMARY{_thr_tag}.png")
+        summary_table_csv = None
 
     for i, (current_d, czi_file) in enumerate(all_target_czis):
         czi_path = os.path.join(current_d, czi_file)
@@ -779,7 +818,9 @@ if run_current or run_all:
             dens_o = (c_orphan / area_o_um2 * 1000) if area_o_um2 > 0 else 0.0
 
             file_stem = os.path.splitext(czi_file)[0]
-            out_csv = os.path.join(current_d, f"{file_stem}{_thr_tag}_analysis.csv")
+            out_csv = mirror_dataset_output_path(
+                run_dir, data_root_abs, current_d, f"{file_stem}{_thr_tag}_analysis.csv"
+            )
             df_spots.to_csv(out_csv, index=False)
 
             # Tag source file and stream to master CSV to avoid RAM blow-up on large all-folder runs
@@ -1027,7 +1068,9 @@ if run_current or run_all:
                                       arrowprops=dict(arrowstyle="-|>", color='white', lw=1.5))
 
             file_stem = os.path.splitext(czi_file)[0]
-            out_img = os.path.join(current_d, f"{file_stem}{_thr_tag}_NMJ_Plot.png")
+            out_img = mirror_dataset_output_path(
+                run_dir, data_root_abs, current_d, f"{file_stem}{_thr_tag}_NMJ_Plot.png"
+            )
             fig.savefig(out_img, bbox_inches="tight")
             # Figure teardown runs in ``finally`` (single ``plt.close(fig)``, thread-safe vs ``close('all')``).
             
@@ -1121,13 +1164,13 @@ if run_current or run_all:
             folder_stats_df.to_csv(summary_table_csv, index=False)
             st.success(f"All-folders summary table saved: `{summary_table_csv}`")
             # Panel 6 (Friedman) uses per-image zone densities — not derivable from the spot-level master CSV alone.
-            file_stats_csv = os.path.join(all_folders_dir, f"ALL_FOLDERS_FILE_STATS{_thr_tag}.csv")
+            file_stats_csv = os.path.join(run_dir, f"ALL_FOLDERS_FILE_STATS{_thr_tag}.csv")
             pd.DataFrame(all_file_stats).to_csv(file_stats_csv, index=False)
             st.success(
                 f"Per-image zone-density table saved (for panel 6 / dashboard regeneration): `{file_stats_csv}`"
             )
         elif not run_all and all_file_stats:
-            file_stats_csv = os.path.join(folder_path, f"BATCH_FILE_STATS{_thr_tag}.csv")
+            file_stats_csv = os.path.join(run_dir, f"BATCH_FILE_STATS{_thr_tag}.csv")
             pd.DataFrame(all_file_stats).to_csv(file_stats_csv, index=False)
             st.success(f"Per-image zone-density table saved: `{file_stats_csv}`")
 
@@ -1229,3 +1272,13 @@ if run_current or run_all:
     if all_file_stats:
         st.subheader("📊 Batch Summary Metrics")
         st.dataframe(pd.DataFrame(all_file_stats))
+
+    run_config["completed_at"] = datetime.now().isoformat(timespec="seconds")
+    run_config["images_analyzed"] = len(all_file_stats)
+    if master_rows_written > 0:
+        run_config["master_csv"] = os.path.relpath(master_csv, run_dir)
+        if os.path.isfile(master_png):
+            run_config["summary_png"] = os.path.relpath(master_png, run_dir)
+    save_run_config_files(run_dir, run_config, channel_snapshot)
+    st.session_state["last_run_dir"] = run_dir
+    render_streamlit_download_section(st, run_dir)

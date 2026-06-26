@@ -4,6 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 import streamlit as st
+from datetime import datetime
 from skimage.feature import blob_dog
 from skimage.filters import gaussian, threshold_otsu
 from scipy.ndimage import distance_transform_edt, zoom
@@ -14,6 +15,14 @@ from nmj_master_dashboard import (
     get_confocal_metadata,
     load_confocal_image,
     total_image_area_um2_from_metadata,
+)
+
+from nmj_run_output import (
+    create_run_output_dir,
+    mirror_dataset_output_path,
+    render_streamlit_download_section,
+    save_run_config_files,
+    snapshot_channel_mappings,
 )
 
 BTX_SIGNAL_CLASS_ORDER = ("NMJ", "Aneural AChR clusters", "Neuron-associated BTX signal", "Orphaned")
@@ -563,6 +572,47 @@ with col_p3:
 if st.button("🚀 Process Pipeline", type="primary"):
     with st.spinner("Processing Images & Computing Distances..."):
         try:
+            data_root_abs = os.path.abspath(DATA_ROOT)
+            run_dir = create_run_output_dir()
+            rel_folder = os.path.relpath(folder_path, data_root_abs)
+            channel_snapshot = snapshot_channel_mappings(
+                data_root_abs,
+                [folder_path],
+                active_folder_path=folder_path,
+                active_file_configs={
+                    selected_czi: {
+                        "muscle": muscle_idx,
+                        "neuron": neuron_idx,
+                        "btx": btx_idx,
+                        "pixel_size": float(pixel_size),
+                        "skip": False,
+                    }
+                },
+            )
+            run_config = {
+                "run_id": os.path.basename(run_dir),
+                "started_at": datetime.now().isoformat(timespec="seconds"),
+                "completed_at": None,
+                "mode": "single_image",
+                "source_folder": rel_folder,
+                "source_image": selected_czi,
+                "parameters": {
+                    "min_diameter_um": float(min_diameter_um),
+                    "max_diameter_um": float(max_diameter_um),
+                    "auto_threshold": bool(auto_threshold),
+                    "auto_thr_sensitivity": auto_thr_sensitivity if auto_threshold else None,
+                    "threshold": float(threshold) if not auto_threshold else None,
+                    "dog_sigma_ratio_manual": float(dog_sigma_ratio_manual) if not auto_threshold else None,
+                    "auto_bg": bool(auto_bg),
+                    "btx_bg_radius_um": float(btx_bg_radius_um),
+                    "m_thresh_mult": float(m_thresh_mult),
+                    "n_thresh_mult": float(n_thresh_mult),
+                    "distance_threshold_um": float(distance_threshold_um),
+                },
+            }
+            save_run_config_files(run_dir, run_config, channel_snapshot)
+            st.info(f"Writing outputs to `{run_dir}` (channel mapping JSON stays in `data/`).")
+
             total_image_area_um2 = total_image_area_um2_from_metadata(czi_path)
             # Extract only the mapped channels (Z-max per channel; avoids loading all C planes).
             channels = load_czi_image(
@@ -812,7 +862,9 @@ if st.button("🚀 Process Pipeline", type="primary"):
                     "(smaller edge distance to neuron mask)."
                 )
             file_stem = os.path.splitext(selected_czi)[0]
-            out_csv = os.path.join(folder_path, f"{file_stem}_analysis.csv")
+            out_csv = mirror_dataset_output_path(
+                run_dir, data_root_abs, folder_path, f"{file_stem}_analysis.csv"
+            )
             df_spots = annotate_global_btx_intensity_otsu(df_spots)
             df_spots.to_csv(out_csv, index=False)
 
@@ -981,12 +1033,21 @@ if st.button("🚀 Process Pipeline", type="primary"):
             st.pyplot(fig)
             
             file_stem = os.path.splitext(selected_czi)[0]
-            out_img = os.path.join(folder_path, f"{file_stem}_NMJ_Plot.png")
+            out_img = mirror_dataset_output_path(
+                run_dir, data_root_abs, folder_path, f"{file_stem}_NMJ_Plot.png"
+            )
             fig.savefig(out_img, bbox_inches="tight")
             fig.clf()
             plt.close(fig)
 
+            run_config["completed_at"] = datetime.now().isoformat(timespec="seconds")
+            run_config["analysis_csv"] = os.path.relpath(out_csv, run_dir)
+            run_config["nmj_plot_png"] = os.path.relpath(out_img, run_dir)
+            save_run_config_files(run_dir, run_config, channel_snapshot)
+            st.session_state["last_run_dir"] = run_dir
+
             st.success(f"Files saved: `{out_csv}` and `{out_img}`")
+            render_streamlit_download_section(st, run_dir)
 
         except Exception as e:
             st.error(f"Analysis Error: {e}")

@@ -23,5 +23,8 @@ __pycache__/
 # (`*HF*` can match unrelated names).
 /data/
 
+# Analysis run outputs (timestamped folders; configs + CSV/PNG/PDF artifacts)
+/output/
+
 # Local scratch file (ignored only while untracked). If Git still tracks it: `git rm --cached ToDo.txt`
 ToDo.txt

@@ -9,8 +9,8 @@ use ``--file-stats-csv`` to point to one explicitly.
 
 Examples::
 
-    python regenerate_all_folders_panel_pdfs.py data/ALL_FOLDERS_MASTER_RESULTS_thrConservative.csv
-    python regenerate_all_folders_panel_pdfs.py data/ALL_FOLDERS_MASTER_RESULTS.csv \\
+    python regenerate_all_folders_panel_pdfs.py output/20260626_120000/ALL_FOLDERS_MASTER_RESULTS_thrConservative.csv
+    python regenerate_all_folders_panel_pdfs.py output/20260626_120000/ALL_FOLDERS_MASTER_RESULTS.csv \\
         --distance-threshold 1.0 --output-stem data/my_rerun_dashboard
 """
 
