@@ -9,9 +9,11 @@ from skimage.filters import gaussian, threshold_otsu
 from scipy.ndimage import distance_transform_edt, zoom
 from skimage.exposure import rescale_intensity
 from nmj_master_dashboard import (
+    annotate_global_btx_intensity_otsu,
     collect_image_jobs,
     get_confocal_metadata,
     load_confocal_image,
+    total_image_area_um2_from_metadata,
 )
 
 BTX_SIGNAL_CLASS_ORDER = ("NMJ", "Aneural AChR clusters", "Neuron-associated BTX signal", "Orphaned")
@@ -301,7 +303,7 @@ def draw_proximity_joint(
 st.set_page_config(page_title="NMJ Pipeline", layout="wide")
 
 st.title("🔬 Single-Image NMJ Pipeline (Multi-Format)")
-st.markdown("Select a single image file (.czi, .lif, .nd2, .tif, .tiff) to automatically detect spots (DoG) and compute distance maps from raw fluorescence data.")
+st.markdown("Select a single image file (.czi, .lif, .nd2, .oir, .poir, .tif, .tiff) to automatically detect spots (DoG) and compute distance maps from raw fluorescence data.")
 
 # --- 1. Recursive File Selection ---
 os.makedirs(DATA_ROOT, exist_ok=True)
@@ -561,6 +563,7 @@ with col_p3:
 if st.button("🚀 Process Pipeline", type="primary"):
     with st.spinner("Processing Images & Computing Distances..."):
         try:
+            total_image_area_um2 = total_image_area_um2_from_metadata(czi_path)
             # Extract only the mapped channels (Z-max per channel; avoids loading all C planes).
             channels = load_czi_image(
                 czi_path,
@@ -767,6 +770,7 @@ if st.button("🚀 Process Pipeline", type="primary"):
 
             df_spots['BTX signal class'] = df_spots.apply(classify_quadrant, axis=1)
             df_spots = normalize_btx_signal_classes(df_spots)
+            df_spots["TOTAL_IMAGE_AREA_um2"] = total_image_area_um2
             df_spots["Resolution_Class"] = np.where(
                 float(pixel_size) > RESOLUTION_CLASS_LOWRES_UM_PER_PIXEL,
                 "Low-Res",
@@ -809,6 +813,7 @@ if st.button("🚀 Process Pipeline", type="primary"):
                 )
             file_stem = os.path.splitext(selected_czi)[0]
             out_csv = os.path.join(folder_path, f"{file_stem}_analysis.csv")
+            df_spots = annotate_global_btx_intensity_otsu(df_spots)
             df_spots.to_csv(out_csv, index=False)
 
             # Normalize images for composite display using percentiles (Auto Contrast)

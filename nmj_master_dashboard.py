@@ -135,6 +135,156 @@ def roundness_3way_kruskal_title(df, label_base="3. Global NMJ Roundness Analysi
     )
 
 
+BTX_SIGNAL_CLASS_HISTOGRAM_LABELS = {
+    "NMJ": "NMJ",
+    "Aneural AChR clusters": "Muscle-only",
+    "Neuron-associated BTX signal": "Neuron-only",
+    "Orphaned": "Orphaned",
+}
+
+
+def global_btx_intensity_otsu_threshold(intensities):
+    """Otsu on pooled spot ``MEAN_INTENSITY`` values (all classes combined)."""
+    from skimage.filters import threshold_otsu
+
+    arr = np.asarray(intensities, dtype=np.float64)
+    arr = arr[np.isfinite(arr)]
+    if arr.size < 2:
+        return np.nan
+    return float(threshold_otsu(arr))
+
+
+GLOBAL_BTX_INTENSITY_OTSU_COL = "GLOBAL_BTX_INTENSITY_OTSU"
+
+
+def annotate_global_btx_intensity_otsu(df, *, otsu_value=None):
+    """Append dataset-global BTX intensity Otsu as the last CSV column (same value on every row)."""
+    if df is None:
+        return df
+    out = df.copy()
+    if GLOBAL_BTX_INTENSITY_OTSU_COL in out.columns:
+        out = out.drop(columns=[GLOBAL_BTX_INTENSITY_OTSU_COL])
+    if otsu_value is None:
+        if "MEAN_INTENSITY" not in out.columns or len(out) == 0:
+            otsu_value = np.nan
+        else:
+            otsu_value = global_btx_intensity_otsu_threshold(out["MEAN_INTENSITY"])
+    elif not np.isfinite(otsu_value):
+        otsu_value = np.nan
+    else:
+        otsu_value = float(otsu_value)
+    out[GLOBAL_BTX_INTENSITY_OTSU_COL] = otsu_value
+    return out
+
+
+def _draw_otsu_vline(ax, otsu_th, *, show_label=False, ymax_frac=0.95):
+    if not np.isfinite(otsu_th):
+        return
+    ax.axvline(otsu_th, color="black", linestyle="--", linewidth=1.4, zorder=5)
+    if not show_label:
+        return
+    y_top = ax.get_ylim()[1]
+    ax.text(
+        otsu_th,
+        y_top * ymax_frac,
+        f" Otsu\n {otsu_th:.1f}",
+        fontsize=8,
+        va="top",
+        ha="left",
+        color="black",
+        bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.75, edgecolor="none"),
+        zorder=6,
+    )
+
+
+def add_global_btx_intensity_histogram_with_otsu_row(fig, outer, row_idx, master_df, *, panel_num):
+    """Full-width histogram row: combined KDE + per-class histograms with shared Otsu line."""
+    axes_out = []
+    gs_hist = outer[row_idx, :].subgridspec(2, 4, height_ratios=[1.15, 1.0], hspace=0.42, wspace=0.28)
+    ax_combined = fig.add_subplot(gs_hist[0, :])
+    class_axes = [fig.add_subplot(gs_hist[1, col]) for col in range(4)]
+    axes_out = [ax_combined, *class_axes]
+
+    master_df = normalize_btx_signal_classes(master_df)
+    if master_df is None or len(master_df) == 0 or "MEAN_INTENSITY" not in master_df.columns:
+        ax_combined.text(0.5, 0.5, "No intensity data", ha="center", va="center")
+        ax_combined.set_axis_off()
+        for ax in class_axes:
+            ax.set_axis_off()
+        ax_combined.set_title(f"{panel_num}. Global BTX Intensity Histograms (No Data)")
+        return axes_out, np.nan
+
+    intensities = master_df["MEAN_INTENSITY"].dropna().to_numpy(dtype=np.float64)
+    otsu_th = global_btx_intensity_otsu_threshold(intensities)
+    int_max = float(np.quantile(intensities, 0.999)) if intensities.size else None
+    xlim = (0, int_max * 1.05) if int_max is not None and int_max > 0 else None
+
+    sns.kdeplot(
+        data=master_df,
+        x="MEAN_INTENSITY",
+        hue="BTX signal class",
+        hue_order=BTX_SIGNAL_CLASS_ORDER,
+        palette=BTX_SIGNAL_CLASS_PALETTE,
+        ax=ax_combined,
+        common_norm=False,
+        fill=True,
+        warn_singular=False,
+        clip=xlim,
+    )
+    _draw_otsu_vline(ax_combined, otsu_th, show_label=True)
+    otsu_label = f"{otsu_th:.1f} A.U." if np.isfinite(otsu_th) else "n/a"
+    ax_combined.set_title(
+        f"{panel_num}. Global BTX Intensity Histograms by Class (Global Otsu = {otsu_label})"
+    )
+    ax_combined.set_xlabel("Mean Fluorescence Intensity (A.U.)")
+    ax_combined.set_ylabel("Probability Density")
+    if xlim is not None:
+        ax_combined.set_xlim(*xlim)
+
+    for ax, btx_class in zip(class_axes, BTX_SIGNAL_CLASS_ORDER):
+        class_df = master_df[master_df["BTX signal class"] == btx_class]
+        label = BTX_SIGNAL_CLASS_HISTOGRAM_LABELS.get(btx_class, btx_class)
+        color = BTX_SIGNAL_CLASS_PALETTE.get(btx_class, "gray")
+        if len(class_df) > 0:
+            sns.histplot(
+                data=class_df,
+                x="MEAN_INTENSITY",
+                color=color,
+                ax=ax,
+                kde=True,
+                stat="count",
+                bins=30,
+                edgecolor="white",
+                linewidth=0.4,
+            )
+            _draw_otsu_vline(ax, otsu_th)
+            vals = class_df["MEAN_INTENSITY"].dropna()
+            stats_txt = (
+                f"n = {len(vals)}\n"
+                f"Med: {float(vals.median()):.1f}\n"
+                f"Mean: {float(vals.mean()):.1f}"
+            )
+            ax.text(
+                0.97,
+                0.97,
+                stats_txt,
+                transform=ax.transAxes,
+                ha="right",
+                va="top",
+                fontsize=8,
+                bbox=dict(boxstyle="round,pad=0.25", facecolor="white", alpha=0.85, edgecolor="0.7"),
+            )
+        else:
+            ax.text(0.5, 0.5, "No spots", ha="center", va="center", fontsize=9)
+        ax.set_title(label, color=color, fontweight="bold")
+        ax.set_xlabel("Mean Fluorescence Intensity (A.U.)")
+        ax.set_ylabel("Spot Count")
+        if xlim is not None:
+            ax.set_xlim(*xlim)
+
+    return axes_out, otsu_th
+
+
 def proximity_joint_axes(
     fig, outer_cell, hspace=0.08, wspace=0.08, title_first=False, *, large_main_panel=False
 ):
@@ -600,9 +750,8 @@ def posthoc_conover_iman(stats_df_spec, value_vars, block_col="File"):
 def build_aggregate_batch_dashboard_figure(master_df, distance_threshold_um, *, run_all, all_file_stats):
     """Batch end-card figure: same layout as ``BTX_batch`` post-batch dashboard.
 
-    ``all_file_stats`` is a list of dicts with keys ``File``, ``Density_Muscle``, ``Density_Neuron``,
-    ``Density_Orphan`` (as produced during a live batch). If empty, panel 6 shows the
-    insufficient-data placeholder.
+    ``all_file_stats`` is a list of dicts with keys ``File``, zone area/count columns, etc.
+    (as produced during a live batch). If empty, the abundance panel shows a placeholder.
 
     Returns ``(fig, panel_specs, meta)`` where ``meta`` contains optional Streamlit messaging fields.
     """
@@ -611,11 +760,11 @@ def build_aggregate_batch_dashboard_figure(master_df, distance_threshold_um, *, 
     master_df = normalize_btx_signal_classes(master_df)
 
     if run_all:
-        fig = plt.figure(figsize=(24, 34), constrained_layout=True)
+        fig = plt.figure(figsize=(24, 40), constrained_layout=True)
         fig.set_constrained_layout_pads(w_pad=0.02, h_pad=0.02, hspace=0.01, wspace=0.01)
     else:
-        fig = plt.figure(figsize=(20, 32), constrained_layout=True)
-    outer = fig.add_gridspec(4, 2)
+        fig = plt.figure(figsize=(20, 38), constrained_layout=True)
+    outer = fig.add_gridspec(5, 2, height_ratios=[1.0, 1.0, 1.0, 1.0, 1.35])
 
     ax_scatter, ax_prox_kde_x, ax_prox_kde_y, ax_prox_title = proximity_joint_axes(
         fig, outer[0, 0], title_first=True, large_main_panel=True
@@ -624,8 +773,15 @@ def build_aggregate_batch_dashboard_figure(master_df, distance_threshold_um, *, 
     ax_circ_kde = fig.add_subplot(outer[1, 0])
     ax_overlap_kde = fig.add_subplot(outer[1, 1])
     ax_intensity_kde = fig.add_subplot(outer[2, 0])
-    ax_spec = fig.add_subplot(outer[2, 1])
-    ax_abundance = fig.add_subplot(outer[3, 0])
+    ax_control = None
+    if run_all and "SOURCE_FOLDER" in master_df.columns and "SOURCE_IMAGE" in master_df.columns:
+        ax_control = fig.add_subplot(outer[2, 1])
+    if run_all:
+        ax_abundance = fig.add_subplot(outer[3, 0])
+    else:
+        ax_abundance = fig.add_subplot(outer[2, 1])
+
+    stats_df_spec = pd.DataFrame(all_file_stats or [])
 
     draw_proximity_joint(
         ax_scatter,
@@ -633,7 +789,7 @@ def build_aggregate_batch_dashboard_figure(master_df, distance_threshold_um, *, 
         ax_prox_kde_y,
         master_df,
         distance_threshold_um,
-        "1. Global NMJ Proximity Analysis",
+        "Global NMJ Proximity Analysis",
         marginal_combined_black=True,
         title_ax=ax_prox_title,
     )
@@ -650,7 +806,7 @@ def build_aggregate_batch_dashboard_figure(master_df, distance_threshold_um, *, 
             fill=True,
             warn_singular=False,
         )
-    ax_size_kde.set_title("2. Global NMJ Size KDE")
+    ax_size_kde.set_title("Global NMJ Size KDE")
     ax_size_kde.set_xlabel("Radius (μm)")
     ax_size_kde.set_ylabel("Probability Density")
 
@@ -671,7 +827,7 @@ def build_aggregate_batch_dashboard_figure(master_df, distance_threshold_um, *, 
         )
     roundness_title_global = roundness_3way_kruskal_title(
         master_df,
-        label_base="3. Global NMJ Roundness KDE (1 − eccentricity)",
+        label_base="Global NMJ Roundness KDE (1 − eccentricity)",
     )
     ax_circ_kde.set_title(roundness_title_global)
     ax_circ_kde.set_xlabel("Roundness (1 = circle)")
@@ -686,7 +842,7 @@ def build_aggregate_batch_dashboard_figure(master_df, distance_threshold_um, *, 
             color=BTX_SIGNAL_CLASS_PALETTE["NMJ"],
             ax=ax_overlap_kde,
         )
-    ax_overlap_kde.set_title("4. Global NMJ Innervation Distribution")
+    ax_overlap_kde.set_title("Global NMJ Innervation Distribution")
     ax_overlap_kde.set_xlabel("NMJ Innervation (%)")
     ax_overlap_kde.set_ylabel("Count")
 
@@ -713,115 +869,11 @@ def build_aggregate_batch_dashboard_figure(master_df, distance_threshold_um, *, 
             ax_intensity_kde.set_xlim(0, _int_max * 1.05)
     intensity_title, intensity_summary = nmj_vs_orphan_intensity_mannwhitney_title(
         master_df,
-        label_base="5. Global Receptor Intensity",
+        label_base="Global Receptor Intensity",
     )
     ax_intensity_kde.set_title(intensity_title)
     ax_intensity_kde.set_xlabel("Mean Fluorescence Intensity")
     ax_intensity_kde.set_ylabel("Probability Density")
-
-    ax_spec.clear()
-    stats_df_spec = pd.DataFrame(all_file_stats or [])
-    p_friedman = None
-    n_spec_images = 0
-    if len(stats_df_spec) >= 2 and {"Density_Muscle", "Density_Neuron", "Density_Orphan"} <= set(
-        stats_df_spec.columns
-    ):
-        n_spec_images = len(stats_df_spec)
-        has_nmj = "Density_NMJ" in stats_df_spec.columns
-        if has_nmj:
-            value_vars = ["Density_NMJ", "Density_Muscle", "Density_Neuron", "Density_Orphan"]
-            palette = ["red", "green", "blue", "gray"]
-        else:
-            value_vars = ["Density_Muscle", "Density_Neuron", "Density_Orphan"]
-            palette = ["red", "blue", "gray"]
-
-        melt_df = stats_df_spec.melt(
-            id_vars=["File"],
-            value_vars=value_vars,
-            var_name="Zone",
-            value_name="Density",
-        )
-        melt_df["Zone"] = melt_df["Zone"].str.replace("Density_", "", regex=False)
-        conover_results = None
-        try:
-            if has_nmj:
-                _stat_friedman, p_friedman = friedmanchisquare(
-                    stats_df_spec["Density_NMJ"],
-                    stats_df_spec["Density_Muscle"],
-                    stats_df_spec["Density_Neuron"],
-                    stats_df_spec["Density_Orphan"],
-                )
-            else:
-                _stat_friedman, p_friedman = friedmanchisquare(
-                    stats_df_spec["Density_Muscle"],
-                    stats_df_spec["Density_Neuron"],
-                    stats_df_spec["Density_Orphan"],
-                )
-            sig_star = (
-                "***" if p_friedman < 0.001 else "**" if p_friedman < 0.01 else "*" if p_friedman < 0.05 else "ns"
-            )
-            title_str = f"6. BTX Enrichment (Friedman P = {p_friedman:.4g} {sig_star})"
-            
-            try:
-                conover_results, _ = posthoc_conover_iman(stats_df_spec, value_vars)
-                if conover_results is not None:
-                    nmj_comps = []
-                    for _, row in conover_results.iterrows():
-                        g1, g2 = row["group1"], row["group2"]
-                        if "NMJ" in (g1, g2):
-                            other = g2 if g1 == "NMJ" else g1
-                            short_other = "Mus" if "Mus" in other else "Neu" if "Neu" in other else "Orp" if "Orp" in other else other
-                            nmj_comps.append(f"NMJ-{short_other}:{row['sig']}")
-                    if nmj_comps:
-                        title_str += f"\nConover: " + ", ".join(nmj_comps)
-            except Exception:
-                pass
-        except ValueError:
-            title_str = "6. BTX Enrichment (Insufficient Variance)"
-            p_friedman = 1.0
-
-        sns.boxplot(
-            data=melt_df,
-            x="Zone",
-            y="Density",
-            hue="Zone",
-            palette=palette,
-            legend=False,
-            ax=ax_spec,
-            showfliers=False,
-        )
-        sns.stripplot(
-            data=melt_df, x="Zone", y="Density", color="black", alpha=0.4, jitter=True, ax=ax_spec
-        )
-        ax_spec.set_title(title_str)
-        ax_spec.set_ylabel("Spots / 1000 μm²")
-        ax_spec.set_xlabel("Target Tissue Zone")
-        if len(stats_df_spec) < 5:
-            ax_spec.text(
-                0.95,
-                0.05,
-                f"Low N ({len(stats_df_spec)}) limits power",
-                transform=ax_spec.transAxes,
-                ha="right",
-                fontsize=9,
-                alpha=0.7,
-            )
-    else:
-        if len(stats_df_spec) > 0 and not {"Density_Muscle", "Density_Neuron", "Density_Orphan"} <= set(
-            stats_df_spec.columns
-        ):
-            ax_spec.text(
-                0.5,
-                0.5,
-                "Panel 6: density columns missing\n"
-                "(need File, Density_Muscle,\nDensity_Neuron, Density_Orphan)",
-                ha="center",
-                va="center",
-                fontsize=10,
-            )
-        else:
-            ax_spec.text(0.5, 0.5, "Insufficient images\nfor specificity test", ha="center", va="center")
-        ax_spec.set_axis_off()
 
     ax_abundance.clear()
     p_friedman_abundance = None
@@ -872,7 +924,7 @@ def build_aggregate_batch_dashboard_figure(master_df, distance_threshold_um, *, 
             data=melt_abundance, x="Zone", y="Abundance", color="black", alpha=0.4, jitter=True, ax=ax_abundance
         )
         
-        abundance_title_str = "7. Global BTX Abundance (Spots / 1000 μm² total area)"
+        abundance_title_str = "Global BTX Abundance (Spots / 1000 μm² total area)"
         if len(stats_df_spec) >= 2:
             try:
                 if has_nmj:
@@ -891,7 +943,7 @@ def build_aggregate_batch_dashboard_figure(master_df, distance_threshold_um, *, 
                 sig_star_ab = (
                     "***" if p_friedman_abundance < 0.001 else "**" if p_friedman_abundance < 0.01 else "*" if p_friedman_abundance < 0.05 else "ns"
                 )
-                abundance_title_str = f"7. Global BTX Abundance (Friedman P = {p_friedman_abundance:.4g} {sig_star_ab})"
+                abundance_title_str = f"Global BTX Abundance (Friedman P = {p_friedman_abundance:.4g} {sig_star_ab})"
                 
                 try:
                     conover_abundance_results, _ = posthoc_conover_iman(stats_df_spec, abundance_vars)
@@ -908,7 +960,7 @@ def build_aggregate_batch_dashboard_figure(master_df, distance_threshold_um, *, 
                 except Exception:
                     pass
             except ValueError:
-                abundance_title_str = "7. Global BTX Abundance (Insufficient Variance)"
+                abundance_title_str = "Global BTX Abundance (Insufficient Variance)"
                 p_friedman_abundance = 1.0
                 
         ax_abundance.set_title(abundance_title_str)
@@ -918,9 +970,7 @@ def build_aggregate_batch_dashboard_figure(master_df, distance_threshold_um, *, 
         ax_abundance.text(0.5, 0.5, "Insufficient images\nfor abundance test", ha="center", va="center")
         ax_abundance.set_axis_off()
 
-    ax_control = None
-    if run_all and "SOURCE_FOLDER" in master_df.columns and "SOURCE_IMAGE" in master_df.columns:
-        ax_control = fig.add_subplot(outer[3, 1])
+    if ax_control is not None:
         per_image = (
             master_df.groupby(["SOURCE_FOLDER", "SOURCE_IMAGE"])
             .agg(total_spots=("is_NMJ", "size"), nmj_spots=("is_NMJ", "sum"))
@@ -953,10 +1003,19 @@ def build_aggregate_batch_dashboard_figure(master_df, distance_threshold_um, *, 
             linewidth=1.5,
             ax=ax_control,
         )
-        ax_control.set_title("7. Per-Image NMJ Rate Control Chart")
+        ax_control.set_title("Per-Image NMJ Rate Control Chart")
         ax_control.set_xlabel("Folder")
         ax_control.set_ylabel("NMJ Rate (%)")
         ax_control.tick_params(axis="x", rotation=45)
+
+    hist_panel_num = 8 if (run_all and ax_control is not None) else 7
+    hist_axes, global_otsu_th = add_global_btx_intensity_histogram_with_otsu_row(
+        fig,
+        outer,
+        4,
+        master_df,
+        panel_num=hist_panel_num,
+    )
 
     panel_specs = [
         ("panel01_global_proximity", [ax_prox_title, ax_prox_kde_x, ax_scatter, ax_prox_kde_y]),
@@ -964,26 +1023,24 @@ def build_aggregate_batch_dashboard_figure(master_df, distance_threshold_um, *, 
         ("panel03_global_roundness_kde", [ax_circ_kde]),
         ("panel04_global_innervation", [ax_overlap_kde]),
         ("panel05_global_intensity", [ax_intensity_kde]),
-        ("panel06_btx_enrichment", [ax_spec]),
-        ("panel07_btx_abundance", [ax_abundance]),
+        ("panel06_btx_abundance", [ax_abundance]),
     ]
     if run_all and ax_control is not None:
-        panel_specs.append(("panel08_per_image_nmj_control", [ax_control]))
+        panel_specs.append(("panel07_per_image_nmj_control", [ax_control]))
+    panel_specs.append(("panel08_global_intensity_histogram_otsu", hist_axes))
 
     meta = {
         "intensity_summary": intensity_summary,
-        "friedman_p": float(p_friedman) if p_friedman is not None else None,
-        "n_spec_images": int(n_spec_images),
-        "conover_results": conover_results,
         "friedman_p_abundance": float(p_friedman_abundance) if p_friedman_abundance is not None else None,
         "conover_abundance_results": conover_abundance_results,
+        "global_btx_intensity_otsu": float(global_otsu_th) if np.isfinite(global_otsu_th) else None,
     }
     return fig, panel_specs, meta
 
 
 # --- MULTI-FORMAT IMAGE READING UTILITIES ---
 
-SUPPORTED_EXTENSIONS = ('.czi', '.tif', '.tiff', '.lif', '.nd2')
+SUPPORTED_EXTENSIONS = ('.czi', '.tif', '.tiff', '.lif', '.nd2', '.oir', '.poir')
 
 
 def collect_image_jobs(target_dirs):
@@ -1006,10 +1063,84 @@ def collect_image_jobs(target_dirs):
     return out
 
 
+def _oir_pixel_size_um(oir) -> float:
+    """Pixel size (µm/px) from an open :class:`oirfile.OirFile`."""
+    scales = getattr(oir, "coord_scales", {}) or {}
+    units = getattr(oir, "coord_units", {}) or {}
+    px_x = scales.get("X")
+    if px_x is not None and units.get("X", "micrometer") == "micrometer":
+        return float(px_x)
+    px_y = scales.get("Y")
+    if px_y is not None and units.get("Y", "micrometer") == "micrometer":
+        return float(px_y)
+    sizes = oir.sizes or {}
+    if "X" in sizes and sizes["X"] > 0:
+        plx = getattr(oir, "_pixel_length_x", 0.0)
+        if plx > 0:
+            return float(plx) / float(sizes["X"])
+    return 1.0
+
+
+def _oir_metadata_from_handle(oir):
+    sizes = oir.sizes or {}
+    if "Y" not in sizes or "X" not in sizes:
+        raise ValueError("OIR file missing Y/X dimensions")
+    num_channels = int(sizes.get("C", sizes.get("S", 1)))
+    shape_yx = (int(sizes["Y"]), int(sizes["X"]))
+    return num_channels, _oir_pixel_size_um(oir), shape_yx
+
+
+def _oir_projected_cyx(oir):
+    """Max-project T/L/Z and return a (C, Y, X) array."""
+    data = np.asarray(oir.asarray())
+    dims = tuple(oir.dims)
+    reduce_axes = tuple(i for i, d in enumerate(dims) if d in ("T", "L", "Z"))
+    if reduce_axes:
+        data = np.max(data, axis=reduce_axes)
+        dims = tuple(d for d in dims if d not in ("T", "L", "Z"))
+
+    if data.ndim == 2:
+        data = data[np.newaxis, ...]
+        dims = ("C", "Y", "X")
+    elif "C" not in dims and "S" not in dims:
+        data = data[np.newaxis, ...]
+        dims = ("C",) + dims
+
+    chan_label = "C" if "C" in dims else "S"
+    data = np.transpose(data, (dims.index(chan_label), dims.index("Y"), dims.index("X")))
+    return np.ascontiguousarray(data)
+
+
+def _load_oir_image(path, channel_indices=None):
+    from oirfile import OirFile, PoirFile
+
+    ext = os.path.splitext(path)[1].lower()
+    if ext == ".poir":
+        with PoirFile(path, squeeze=True) as archive:
+            oir = next(iter(archive.values()))
+            stack = _oir_projected_cyx(oir)
+    else:
+        with OirFile(path, squeeze=True) as oir:
+            stack = _oir_projected_cyx(oir)
+
+    if channel_indices is not None:
+        wanted = list(dict.fromkeys(int(c) for c in channel_indices))
+        h, w = stack.shape[1], stack.shape[2]
+        return {
+            c_idx: (stack[c_idx].copy() if c_idx < stack.shape[0] else np.zeros((h, w), dtype=stack.dtype))
+            for c_idx in wanted
+        }
+    return stack
+
+
 def get_confocal_metadata(path):
     """Unified function to extract channel count, pixel size (um/pixel), and YX shape.
 
+    Supported formats: ``.czi`` (Zeiss), ``.nd2`` (Nikon), ``.lif`` (Leica),
+    ``.oir``/``.poir`` (Olympus/Evident), ``.tif``/``.tiff``.
+
     Returns (num_channels, pixel_size_um, shape_yx).
+    See also :func:`total_image_area_um2_from_metadata`.
     """
     ext = os.path.splitext(path)[1].lower()
     if ext == '.czi':
@@ -1070,6 +1201,18 @@ def get_confocal_metadata(path):
             pass
         shape_yx = (dims.y, dims.x)
         return num_channels, pixel_size_um, shape_yx
+
+    elif ext in (".oir", ".poir"):
+        from oirfile import OirFile, PoirFile
+
+        if ext == ".poir":
+            with PoirFile(path, squeeze=True) as archive:
+                oir = next(iter(archive.values()), None)
+                if oir is None:
+                    raise ValueError(f"No OIR entries found in POIR archive: {path}")
+                return _oir_metadata_from_handle(oir)
+        with OirFile(path, squeeze=True) as oir:
+            return _oir_metadata_from_handle(oir)
 
     elif ext in ('.tif', '.tiff'):
         import tifffile
@@ -1137,6 +1280,20 @@ def get_confocal_metadata(path):
 
     else:
         raise ValueError(f"Unsupported file format: {ext}")
+
+
+def total_image_area_um2_from_metadata(path):
+    """Physical field-of-view area (µm²) from file metadata: height × width × pixel_size².
+
+    Uses :func:`get_confocal_metadata` (``.czi``, ``.nd2``, ``.lif``, ``.oir``/``.poir``, ``.tif``/``.tiff``).
+    """
+    _num_channels, pixel_size_um, shape_yx = get_confocal_metadata(path)
+    if not shape_yx or len(shape_yx) != 2:
+        raise ValueError(f"Could not read image shape from metadata: {path}")
+    if pixel_size_um is None or float(pixel_size_um) <= 0:
+        raise ValueError(f"Could not read valid pixel size from metadata: {path}")
+    height, width = int(shape_yx[0]), int(shape_yx[1])
+    return float(height) * float(width) * float(pixel_size_um) ** 2
 
 
 def _czi_channel_zmax_2d(czi, c_idx, dims0):
@@ -1299,6 +1456,9 @@ def load_confocal_image(path, channel_indices=None):
                         np.maximum(acc, plane, out=acc)
                 all_ch.append(acc)
             return np.stack(all_ch, axis=0)
+
+    elif ext in (".oir", ".poir"):
+        return _load_oir_image(path, channel_indices=channel_indices)
 
     elif ext in ('.tif', '.tiff'):
         import tifffile

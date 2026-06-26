@@ -9,3 +9,4 @@ scipy
 nd2
 readlif
 tifffile
+oirfile

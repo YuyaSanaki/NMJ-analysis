@@ -29,7 +29,11 @@ Plain `docker compose up` with **no** `--profile` does not start either app (by 
    ```
    Keep the terminal window open during your analysis and use the terminal window for the rest of the commands.
 
-3. Open **`http://localhost:8501`** in the browser.
+3. Open the app in the browser (check the terminal for the exact URL):
+   - **Batch:** `http://localhost:8503`
+   - **Single-image:** `http://localhost:8504`
+
+   Port 8501 is not used by this project (it may be occupied by another app on your machine).
 
 4. Set up analysis configurations in the browser.
 

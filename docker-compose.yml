@@ -1,8 +1,8 @@
-# Run ONE app at a time (mutually exclusive profiles). Only one port (8501) and the full
-# Docker VM memory budget goes to that container — better for large CZI / OOM avoidance.
+# Run ONE app at a time (mutually exclusive profiles). Host ports are fixed so logs match
+# the URL you open in the browser (avoids confusion when another app uses 8501).
 #
-#   Single-image UI:  docker compose --profile single up --build
-#   Batch UI:         docker compose --profile batch up --build
+#   Single-image UI:  http://localhost:8504  —  docker compose --profile single up --build
+#   Batch UI:         http://localhost:8503  —  docker compose --profile batch up --build
 #
 # Still raise Docker Desktop → Settings → Resources → Memory if analysis OOMs (e.g. 12G+).
 
@@ -14,11 +14,11 @@ services:
     volumes:
       - .:/app
     ports:
-      - "8504:8501"
+      - "8504:8504"
     environment:
       - PYTHONUNBUFFERED=1
       - MPLBACKEND=Agg
-    command: streamlit run BTX.py --server.port=8501 --server.address=0.0.0.0 --server.fileWatcherType=none --server.runOnSave=false --browser.gatherUsageStats=false
+    command: streamlit run BTX.py --server.port=8504 --server.address=0.0.0.0 --server.fileWatcherType=none --server.runOnSave=false --browser.gatherUsageStats=false
     deploy:
       resources:
         limits:
@@ -33,11 +33,11 @@ services:
     volumes:
       - .:/app
     ports:
-      - "8503:8501"
+      - "8503:8503"
     environment:
       - PYTHONUNBUFFERED=1
       - MPLBACKEND=Agg
-    command: streamlit run BTX_batch.py --server.port=8501 --server.address=0.0.0.0 --server.fileWatcherType=none --server.runOnSave=false --browser.gatherUsageStats=false
+    command: streamlit run BTX_batch.py --server.port=8503 --server.address=0.0.0.0 --server.fileWatcherType=none --server.runOnSave=false --browser.gatherUsageStats=false
     deploy:
       resources:
         limits:

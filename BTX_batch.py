@@ -20,6 +20,7 @@ from nmj_master_dashboard import (
     dataframe_for_roundness_kde_and_kruskal,
     normalize_btx_signal_classes,
     ensure_roundness_column,
+    annotate_global_btx_intensity_otsu,
     nmj_vs_orphan_intensity_mannwhitney_title,
     roundness_3way_kruskal_title,
     proximity_joint_axes,
@@ -32,10 +33,12 @@ from nmj_master_dashboard import (
     collect_image_jobs,
     get_confocal_metadata,
     load_confocal_image,
+    total_image_area_um2_from_metadata,
 )
 
 # Each subdirectory under this path is one dataset folder (contains `.czi` files).
 DATA_ROOT = "data"
+base_dir = DATA_ROOT  # legacy alias used in older batch paths
 
 # DoG ``blob_dog`` sigma_ratio: **Auto threshold sensitivity** radio (auto) or manual number input (default = Conservative).
 DOG_SIGMA_RATIO_CONSERVATIVE = 1.6
@@ -65,7 +68,7 @@ collect_czi_jobs = collect_image_jobs
 st.set_page_config(page_title="NMJ Pipeline", layout="wide")
 
 st.title("🔬 Multiple-Image Batch NMJ Pipeline")
-st.markdown("Select a folder to batch-process all `.czi` files automatically.")
+st.markdown("Select a folder to batch-process supported confocal images automatically (.czi, .nd2, .lif, .oir, .poir, .tif).")
 
 # --- 1. Folder & File Selection ---
 os.makedirs(DATA_ROOT, exist_ok=True)
@@ -432,7 +435,7 @@ if run_current or run_all:
     progress = st.progress(0)
     status = st.empty()
     
-    target_dirs = [folder_path] if run_current else [os.path.join(base_dir, d) for d in folders]
+    target_dirs = [folder_path] if run_current else [os.path.join(DATA_ROOT, d) for d in folders]
 
     # Recursive discovery: .czi in subfolders (e.g. Data/Cond1/slide/1.czi) are included; listdir() missed them
     # so per-image *_analysis.csv / *_NMJ_Plot.png never appeared next to the files the user was checking.
@@ -444,7 +447,7 @@ if run_current or run_all:
 
     if run_all:
         # Aggregate artifacts for "ALL Folders" live next to dataset folders under `data/`.
-        all_folders_dir = os.path.abspath(base_dir)
+        all_folders_dir = os.path.abspath(DATA_ROOT)
         master_csv = os.path.join(all_folders_dir, f"ALL_FOLDERS_MASTER_RESULTS{_thr_tag}.csv")
         master_png = os.path.join(all_folders_dir, f"ALL_FOLDERS_SUMMARY{_thr_tag}.png")
         summary_table_csv = os.path.join(all_folders_dir, f"ALL_FOLDERS_SUMMARY_TABLE{_thr_tag}.csv")
@@ -508,6 +511,7 @@ if run_current or run_all:
         
         try:
             fig = None  # Per-iteration figure; closed in ``finally`` (never ``plt.close('all')``).
+            total_image_area_um2 = total_image_area_um2_from_metadata(czi_path)
             # Extract channels using selective channel reads. Only the muscle/neuron/BTX
             # channels are pulled off disk + Z-projected, instead of loading the full
             # multi-channel volume and keeping it pinned alive via numpy views.
@@ -721,6 +725,7 @@ if run_current or run_all:
 
             df_spots["BTX signal class"] = df_spots.apply(classify_quadrant, axis=1)
             df_spots = normalize_btx_signal_classes(df_spots)
+            df_spots["TOTAL_IMAGE_AREA_um2"] = total_image_area_um2
             df_spots["Resolution_Class"] = np.where(
                 float(pixel_size) > RESOLUTION_CLASS_LOWRES_UM_PER_PIXEL,
                 "Low-Res",
@@ -784,6 +789,8 @@ if run_current or run_all:
             cols = df_spots_master.columns.tolist()
             cols.insert(0, cols.pop(cols.index("SOURCE_IMAGE")))
             cols.insert(0, cols.pop(cols.index("SOURCE_FOLDER")))
+            if "TOTAL_IMAGE_AREA_um2" in cols:
+                cols.insert(2, cols.pop(cols.index("TOTAL_IMAGE_AREA_um2")))
             df_spots_master = df_spots_master.reindex(columns=cols)
             df_spots_master.to_csv(master_csv, mode="a", header=(master_rows_written == 0), index=False)
             master_rows_written += len(df_spots_master)
@@ -1086,6 +1093,8 @@ if run_current or run_all:
         master_df = ensure_roundness_column(
             normalize_btx_signal_classes(pd.read_csv(master_csv))
         )
+        master_df = annotate_global_btx_intensity_otsu(master_df)
+        master_df.to_csv(master_csv, index=False)
         st.success(f"Aggregate Master dataset uniquely saved: `{master_csv}`")
         
         st.subheader("📈 Batch Statistical Summary")
@@ -1139,77 +1148,42 @@ if run_current or run_all:
                     "background signals."
                 )
 
-        p_friedman = dash_meta.get("friedman_p")
         p_friedman_ab = dash_meta.get("friedman_p_abundance")
-        n_spec_images = dash_meta.get("n_spec_images", 0)
         
-        if p_friedman is not None and n_spec_images >= 2:
+        if p_friedman_ab is not None:
             st.markdown("### 🧪 Statistical Analysis of BTX Distribution")
-            
-            col_stat1, col_stat2 = st.columns(2)
-            
-            with col_stat1:
-                st.markdown("#### 1️⃣ Local Zone Density (Enrichment)")
-                st.caption("Tests if spot density (spots / zone area) differs between zones. This evaluates local concentration.")
-                if p_friedman < 0.05:
-                    st.success(
-                        "Confirmed: BTX signals are significantly enriched in specific zones "
-                        f"(Friedman p={p_friedman:.4e})."
-                    )
-                else:
-                    st.warning(
-                        "Note: Local density differences across zones did not reach significance "
-                        f"(Friedman p={p_friedman:.4g})."
-                    )
-                
-                conover_df = dash_meta.get("conover_results")
-                if conover_df is not None and not conover_df.empty:
-                    display_df = conover_df.copy().rename(columns={
-                        "group1": "Zone 1",
-                        "group2": "Zone 2",
-                        "t_stat": "t-statistic",
-                        "p_val": "p-value (raw)",
-                        "p_val_adj": "p-value (adjusted)",
-                        "sig": "Significance",
-                    })
-                    cols_order = ["Zone 1", "Zone 2", "t-statistic", "p-value (raw)", "p-value (adjusted)", "Significance"]
-                    st.dataframe(display_df[cols_order].style.format({
-                        "t-statistic": "{:.3f}",
-                        "p-value (raw)": "{:.4e}",
-                        "p-value (adjusted)": "{:.4e}"
-                    }))
-                    
-            with col_stat2:
-                st.markdown("#### 2️⃣ Global BTX Abundance")
-                st.caption("Tests if the absolute number of spots (normalized by total image area) differs between zones. This evaluates overall abundance.")
-                if p_friedman_ab is not None:
-                    if p_friedman_ab < 0.05:
-                        st.success(
-                            "Confirmed: Absolute abundance differs significantly across zones "
-                            f"(Friedman p={p_friedman_ab:.4e})."
-                        )
-                    else:
-                        st.warning(
-                            "Note: Absolute abundance differences across zones did not reach significance "
-                            f"(Friedman p={p_friedman_ab:.4g})."
-                        )
-                    
-                    conover_df_ab = dash_meta.get("conover_abundance_results")
-                    if conover_df_ab is not None and not conover_df_ab.empty:
-                        display_df_ab = conover_df_ab.copy().rename(columns={
-                            "group1": "Zone 1",
-                            "group2": "Zone 2",
-                            "t_stat": "t-statistic",
-                            "p_val": "p-value (raw)",
-                            "p_val_adj": "p-value (adjusted)",
-                            "sig": "Significance",
-                        })
-                        cols_order = ["Zone 1", "Zone 2", "t-statistic", "p-value (raw)", "p-value (adjusted)", "Significance"]
-                        st.dataframe(display_df_ab[cols_order].style.format({
-                            "t-statistic": "{:.3f}",
-                            "p-value (raw)": "{:.4e}",
-                            "p-value (adjusted)": "{:.4e}"
-                        }))
+            st.markdown("#### Global BTX Abundance")
+            st.caption(
+                "Tests if the absolute number of spots (normalized by total image area) "
+                "differs between zones."
+            )
+            if p_friedman_ab < 0.05:
+                st.success(
+                    "Confirmed: Absolute abundance differs significantly across zones "
+                    f"(Friedman p={p_friedman_ab:.4e})."
+                )
+            else:
+                st.warning(
+                    "Note: Absolute abundance differences across zones did not reach significance "
+                    f"(Friedman p={p_friedman_ab:.4g})."
+                )
+
+            conover_df_ab = dash_meta.get("conover_abundance_results")
+            if conover_df_ab is not None and not conover_df_ab.empty:
+                display_df_ab = conover_df_ab.copy().rename(columns={
+                    "group1": "Zone 1",
+                    "group2": "Zone 2",
+                    "t_stat": "t-statistic",
+                    "p_val": "p-value (raw)",
+                    "p_val_adj": "p-value (adjusted)",
+                    "sig": "Significance",
+                })
+                cols_order = ["Zone 1", "Zone 2", "t-statistic", "p-value (raw)", "p-value (adjusted)", "Significance"]
+                st.dataframe(display_df_ab[cols_order].style.format({
+                    "t-statistic": "{:.3f}",
+                    "p-value (raw)": "{:.4e}",
+                    "p-value (adjusted)": "{:.4e}"
+                }))
 
         # Persist PNG + per-panel PDFs before ``st.pyplot`` — Streamlit may clear the figure
         # after display unless ``clear_figure=False``, which would otherwise yield empty PDFs.

@@ -1,4 +1,4 @@
-FROM python:3.10-slim
+FROM python:3.12-slim
 
 WORKDIR /app
 
@@ -8,5 +8,5 @@ COPY requirements.txt .
 RUN pip install uv && uv pip install --system --no-cache -r requirements.txt
 
 # Do not copy code here as it will be mounted at runtime via docker-compose
-# Run Streamlit on port 8501 inside the container
-CMD ["streamlit", "run", "BTX.py", "--server.port=8501", "--server.address=0.0.0.0"]
+# Default CMD is overridden by docker-compose; batch uses 8503, single-image uses 8504.
+CMD ["streamlit", "run", "BTX.py", "--server.port=8504", "--server.address=0.0.0.0"]
