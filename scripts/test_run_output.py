@@ -89,6 +89,65 @@ class RunOutputHelpersTest(unittest.TestCase):
             self.assertTrue(any(n.endswith("x_analysis.csv") for n in names))
 
 
+class OtsuAbundanceStatsTest(unittest.TestCase):
+    def test_duplicate_filename_across_folders_not_merged(self):
+        import pandas as pd
+
+        from nmj_master_dashboard import (
+            ABUNDANCE_COL_EARLY_NMJ,
+            AREA_COL_EARLY_NMJ,
+            AREA_COL_MUSCLE,
+            AREA_COL_NEURON,
+            AREA_COL_ORPHANED,
+            BTX_CLASS_EARLY_NMJ,
+            build_otsu_thresholded_abundance_stats,
+        )
+
+        otsu_th = 100.0
+        master_rows = []
+        for folder, n_spots in (("FolderA", 10), ("FolderB", 2)):
+            for _ in range(n_spots):
+                master_rows.append(
+                    {
+                        "SOURCE_FOLDER": folder,
+                        "SOURCE_IMAGE": "dup.czi",
+                        "MEAN_INTENSITY": 200.0,
+                        "BTX signal class": BTX_CLASS_EARLY_NMJ,
+                    }
+                )
+        master_df = pd.DataFrame(master_rows)
+
+        file_stats = [
+            {
+                "File": "dup.czi",
+                "Folder": "FolderA",
+                AREA_COL_EARLY_NMJ: 1000.0,
+                AREA_COL_MUSCLE: 1000.0,
+                AREA_COL_NEURON: 1000.0,
+                AREA_COL_ORPHANED: 1000.0,
+            },
+            {
+                "File": "dup.czi",
+                "Folder": "FolderB",
+                AREA_COL_EARLY_NMJ: 500.0,
+                AREA_COL_MUSCLE: 500.0,
+                AREA_COL_NEURON: 500.0,
+                AREA_COL_ORPHANED: 500.0,
+            },
+        ]
+
+        out = build_otsu_thresholded_abundance_stats(master_df, file_stats, otsu_th)
+        self.assertEqual(len(out), 2)
+        by_folder = out.set_index("Folder")[ABUNDANCE_COL_EARLY_NMJ].to_dict()
+        # 10 spots / 4000 µm² * 1000 and 2 spots / 2000 µm² * 1000
+        self.assertAlmostEqual(by_folder["FolderA"], 2.5)
+        self.assertAlmostEqual(by_folder["FolderB"], 1.0)
+
+        # Buggy path would assign 12 spots to both rows -> 3.0 and 6.0
+        self.assertNotAlmostEqual(by_folder["FolderA"], 3.0)
+        self.assertNotAlmostEqual(by_folder["FolderB"], 6.0)
+
+
 def smoke_test_one_image() -> None:
     """Load one CZI and verify artifacts land only under output/."""
     import numpy as np
@@ -142,6 +201,7 @@ def smoke_test_one_image() -> None:
 
 if __name__ == "__main__":
     suite = unittest.defaultTestLoader.loadTestsFromTestCase(RunOutputHelpersTest)
+    suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(OtsuAbundanceStatsTest))
     result = unittest.TextTestRunner(verbosity=2).run(suite)
     if not result.wasSuccessful():
         sys.exit(1)

@@ -2663,4 +2663,3 @@ def load_confocal_image(path, channel_indices=None):
                     chan_2d = np.max(std_data[c_idx], axis=0)
                     all_ch.append(chan_2d)
                 return np.stack(all_ch, axis=0)
-
