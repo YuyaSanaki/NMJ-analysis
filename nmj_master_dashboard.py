@@ -66,6 +66,9 @@ ABUNDANCE_COL_MUSCLE = "Abundance_Muscle_associated"
 ABUNDANCE_COL_NEURON = "Abundance_Neuron_associated"
 ABUNDANCE_COL_ORPHANED = "Abundance_Orphaned"
 
+UM2_PER_MM2 = 1_000_000.0
+SPOT_DENSITY_PER_MM2_LABEL = "Spots / mm²"
+
 FILE_STATS_COLUMN_LEGACY_ALIASES = {
     "NMJs (Both)": BTX_CLASS_EARLY_NMJ,
     "Near Aneural AChR clusters": BTX_CLASS_MUSCLE,
@@ -348,7 +351,7 @@ ZONE_ABUNDANCE_VALUE_COLS = (
 
 
 def _append_zone_abundance_columns(stats_df_spec):
-    """Add per-image zone abundance (spots / 1000 µm² total mask area) columns."""
+    """Add per-image zone abundance (spots / 1 mm² total mask area) columns."""
     if stats_df_spec is None or len(stats_df_spec) == 0:
         return pd.DataFrame()
     df = normalize_file_stats_columns(stats_df_spec.copy())
@@ -363,10 +366,10 @@ def _append_zone_abundance_columns(stats_df_spec):
         + df[AREA_COL_ORPHANED]
     )
     total_area = np.where(total_area <= 0, 1.0, total_area)
-    df[ABUNDANCE_COL_EARLY_NMJ] = df[BTX_CLASS_EARLY_NMJ] / total_area * 1000
-    df[ABUNDANCE_COL_MUSCLE] = df[BTX_CLASS_MUSCLE] / total_area * 1000
-    df[ABUNDANCE_COL_NEURON] = df[BTX_CLASS_NEURON] / total_area * 1000
-    df[ABUNDANCE_COL_ORPHANED] = df[BTX_CLASS_ORPHANED] / total_area * 1000
+    df[ABUNDANCE_COL_EARLY_NMJ] = df[BTX_CLASS_EARLY_NMJ] / total_area * UM2_PER_MM2
+    df[ABUNDANCE_COL_MUSCLE] = df[BTX_CLASS_MUSCLE] / total_area * UM2_PER_MM2
+    df[ABUNDANCE_COL_NEURON] = df[BTX_CLASS_NEURON] / total_area * UM2_PER_MM2
+    df[ABUNDANCE_COL_ORPHANED] = df[BTX_CLASS_ORPHANED] / total_area * UM2_PER_MM2
     return df
 
 
@@ -388,10 +391,23 @@ def build_otsu_thresholded_abundance_stats(master_df, all_file_stats, otsu_th):
     if len(filtered) == 0:
         return pd.DataFrame()
 
-    counts = (
-        filtered.groupby(["SOURCE_IMAGE", "BTX signal class"]).size().unstack(fill_value=0)
+    use_folder = (
+        "SOURCE_FOLDER" in filtered.columns
+        and "Folder" in base.columns
     )
-    out = base[["File"]].copy()
+    if use_folder:
+        counts = (
+            filtered.groupby(["SOURCE_FOLDER", "SOURCE_IMAGE", "BTX signal class"])
+            .size()
+            .unstack(fill_value=0)
+        )
+    else:
+        counts = (
+            filtered.groupby(["SOURCE_IMAGE", "BTX signal class"]).size().unstack(fill_value=0)
+        )
+
+    id_cols = ["Folder", "File"] if "Folder" in base.columns else ["File"]
+    out = base[id_cols].copy()
     total_area = (
         base[AREA_COL_EARLY_NMJ]
         + base[AREA_COL_MUSCLE]
@@ -402,10 +418,18 @@ def build_otsu_thresholded_abundance_stats(master_df, all_file_stats, otsu_th):
 
     for btx_class, ab_col in BTX_CLASS_TO_ABUNDANCE_COL.items():
         if btx_class in counts.columns:
-            class_counts = base["File"].map(counts[btx_class]).fillna(0)
+            if use_folder:
+                lookup_keys = list(zip(base["Folder"], base["File"]))
+                class_counts = pd.Series(
+                    [counts.at[key, btx_class] if key in counts.index else 0 for key in lookup_keys],
+                    index=base.index,
+                    dtype=float,
+                )
+            else:
+                class_counts = base["File"].map(counts[btx_class]).fillna(0)
         else:
             class_counts = pd.Series(0.0, index=base.index)
-        out[ab_col] = class_counts / total_area * 1000
+        out[ab_col] = class_counts / total_area * UM2_PER_MM2
 
     return out
 
@@ -502,7 +526,7 @@ def draw_zone_btx_abundance_panel(ax, stats_df_spec, *, title_base, include_nmj_
             p_friedman_abundance = 1.0
 
     ax.set_title(abundance_title_str)
-    ax.set_ylabel("Spots / 1000 μm²")
+    ax.set_ylabel(SPOT_DENSITY_PER_MM2_LABEL)
     ax.set_xlabel("Target Tissue Zone")
     return abundance_title_str, p_friedman_abundance, conover_abundance_results
 
@@ -556,6 +580,47 @@ def draw_global_intensity_kde_panel(ax, master_df, *, title, otsu_th=None, otsu_
     ax.set_xlabel("Mean Fluorescence Intensity")
     ax.set_ylabel("Probability Density")
     return panel_title, intensity_summary
+
+
+def draw_total_spots_above_otsu_bar_panel(ax, master_df, *, otsu_th):
+    """Bar chart of spot counts per class after global intensity Otsu filtering."""
+    ax.clear()
+    master_df = normalize_btx_signal_classes(master_df)
+    if master_df is None or len(master_df) == 0 or "MEAN_INTENSITY" not in master_df.columns:
+        ax.text(0.5, 0.5, "No spot data", ha="center", va="center")
+        ax.set_title("Total Spot Count (Otsu-filtered)")
+        ax.set_axis_off()
+        return
+
+    if otsu_th is None or not np.isfinite(otsu_th):
+        otsu_th = global_btx_intensity_otsu_threshold(master_df["MEAN_INTENSITY"])
+    if not np.isfinite(otsu_th):
+        ax.text(0.5, 0.5, "No Otsu threshold", ha="center", va="center")
+        ax.set_title("Total Spot Count (Otsu-filtered)")
+        ax.set_axis_off()
+        return
+
+    spot_counts = build_otsu_dim_noise_rejection_table(master_df, otsu_th)
+    if len(spot_counts) == 0:
+        ax.text(0.5, 0.5, "No spots after Otsu filter", ha="center", va="center")
+        ax.set_title(f"Total Spot Count (spots ≥ Otsu {otsu_th:.1f} A.U.)")
+        ax.set_axis_off()
+        return
+
+    sns.barplot(
+        data=spot_counts,
+        x="btx_signal_class",
+        y="n_spots_above_otsu",
+        order=BTX_SIGNAL_CLASS_ORDER,
+        hue="btx_signal_class",
+        palette=BTX_SIGNAL_CLASS_PALETTE,
+        legend=False,
+        ax=ax,
+    )
+    ax.set_title(f"Total Spot Count (spots ≥ Otsu {otsu_th:.1f} A.U.)")
+    ax.set_xlabel("BTX Signal Class")
+    ax.set_ylabel("Spot Count")
+    ax.tick_params(axis="x", rotation=25)
 
 
 def _roundness_kruskal_result(df):
@@ -853,7 +918,7 @@ def build_batch_stat_summary_dataframe(
             metric="Zone BTX spot abundance (all detected spots)",
             comparison=BTX_CLASS_COMPARISON_4WAY_ZONES,
             test="Friedman",
-            test_design="repeated measures per image; abundance = spots / 1000 μm² total mask area",
+            test_design="repeated measures per image; abundance = spots / 1 mm² total mask area",
             statistic="chi-square",
             statistic_value="",
             p_value=p_friedman_all,
@@ -890,7 +955,7 @@ def build_batch_stat_summary_dataframe(
             metric=f"Zone BTX spot abundance (spots ≥ global Otsu {otsu_label})",
             comparison=BTX_CLASS_COMPARISON_4WAY_ZONES,
             test="Friedman",
-            test_design="repeated measures per image; Otsu-filtered counts / 1000 μm²",
+            test_design="repeated measures per image; Otsu-filtered counts / 1 mm²",
             statistic="chi-square",
             statistic_value="",
             p_value=p_friedman_otsu,
@@ -2004,8 +2069,8 @@ def build_aggregate_batch_dashboard_figure(master_df, distance_threshold_um, *, 
     ax_size_kde = fig.add_subplot(outer[1, 1])
     ax_circ_kde = fig.add_subplot(outer[2, 0])
     ax_overlap_kde = fig.add_subplot(outer[2, 1])
-    ax_intensity_kde = fig.add_subplot(outer[3, 0])
-    ax_intensity_otsu_kde = fig.add_subplot(outer[3, 1])
+    ax_intensity_otsu_kde = fig.add_subplot(outer[3, 0])
+    ax_total_spots_otsu = fig.add_subplot(outer[3, 1])
     ax_abundance = fig.add_subplot(outer[4, 0])
     ax_abundance_otsu = fig.add_subplot(outer[4, 1])
     ax_control = fig.add_subplot(outer[5, :]) if run_all else None
@@ -2077,24 +2142,22 @@ def build_aggregate_batch_dashboard_figure(master_df, distance_threshold_um, *, 
     ax_overlap_kde.set_xlabel(f"{BTX_CLASS_EARLY_NMJ} Innervation (%)")
     ax_overlap_kde.set_ylabel("Count")
 
-    _, intensity_summary = draw_global_intensity_kde_panel(
-        ax_intensity_kde,
-        master_df,
-        title="Global Receptor Intensity (all spots)",
-        otsu_th=global_otsu_th,
-        otsu_filtered=False,
-    )
     otsu_int_title = (
         f"Global Receptor Intensity (spots ≥ Otsu {global_otsu_th:.1f} A.U.)"
         if np.isfinite(global_otsu_th)
         else "Global Receptor Intensity (Otsu-filtered)"
     )
-    draw_global_intensity_kde_panel(
+    _, intensity_summary = draw_global_intensity_kde_panel(
         ax_intensity_otsu_kde,
         master_df,
         title=otsu_int_title,
         otsu_th=global_otsu_th,
         otsu_filtered=True,
+    )
+    draw_total_spots_above_otsu_bar_panel(
+        ax_total_spots_otsu,
+        master_df,
+        otsu_th=global_otsu_th,
     )
 
     _, p_friedman_abundance, conover_abundance_results = draw_zone_btx_abundance_panel(
@@ -2162,8 +2225,8 @@ def build_aggregate_batch_dashboard_figure(master_df, distance_threshold_um, *, 
         ("panel03_global_size_kde", [ax_size_kde]),
         ("panel04_global_roundness_kde", [ax_circ_kde]),
         ("panel05_global_innervation", [ax_overlap_kde]),
-        ("panel06_global_intensity_all", [ax_intensity_kde]),
-        ("panel07_global_intensity_otsu", [ax_intensity_otsu_kde]),
+        ("panel06_global_intensity_otsu", [ax_intensity_otsu_kde]),
+        ("panel07_total_spots_otsu", [ax_total_spots_otsu]),
         ("panel08_btx_abundance_all", [ax_abundance]),
         ("panel09_btx_abundance_otsu", [ax_abundance_otsu]),
     ]

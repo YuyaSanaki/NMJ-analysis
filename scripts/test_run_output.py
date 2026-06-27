@@ -139,13 +139,188 @@ class OtsuAbundanceStatsTest(unittest.TestCase):
         out = build_otsu_thresholded_abundance_stats(master_df, file_stats, otsu_th)
         self.assertEqual(len(out), 2)
         by_folder = out.set_index("Folder")[ABUNDANCE_COL_EARLY_NMJ].to_dict()
-        # 10 spots / 4000 µm² * 1000 and 2 spots / 2000 µm² * 1000
-        self.assertAlmostEqual(by_folder["FolderA"], 2.5)
-        self.assertAlmostEqual(by_folder["FolderB"], 1.0)
+        # 10 spots / 4000 µm² * 1e6 and 2 spots / 2000 µm² * 1e6 (spots per 1 mm²)
+        self.assertAlmostEqual(by_folder["FolderA"], 2500.0)
+        self.assertAlmostEqual(by_folder["FolderB"], 1000.0)
 
-        # Buggy path would assign 12 spots to both rows -> 3.0 and 6.0
-        self.assertNotAlmostEqual(by_folder["FolderA"], 3.0)
-        self.assertNotAlmostEqual(by_folder["FolderB"], 6.0)
+        # Buggy path would assign 12 spots to both rows -> 3000 and 6000 spots/mm²
+        self.assertNotAlmostEqual(by_folder["FolderA"], 3000.0)
+        self.assertNotAlmostEqual(by_folder["FolderB"], 6000.0)
+
+
+class DashboardFunctionalityTest(unittest.TestCase):
+    def test_zone_abundance_normalized_per_mm2(self):
+        import pandas as pd
+
+        from nmj_master_dashboard import (
+            ABUNDANCE_COL_EARLY_NMJ,
+            AREA_COL_EARLY_NMJ,
+            AREA_COL_MUSCLE,
+            AREA_COL_NEURON,
+            AREA_COL_ORPHANED,
+            BTX_CLASS_EARLY_NMJ,
+            BTX_CLASS_MUSCLE,
+            BTX_CLASS_NEURON,
+            BTX_CLASS_ORPHANED,
+            SPOT_DENSITY_PER_MM2_LABEL,
+            UM2_PER_MM2,
+            _append_zone_abundance_columns,
+        )
+
+        stats = pd.DataFrame(
+            [
+                {
+                    "File": "a.czi",
+                    BTX_CLASS_EARLY_NMJ: 5,
+                    BTX_CLASS_MUSCLE: 0,
+                    BTX_CLASS_NEURON: 0,
+                    BTX_CLASS_ORPHANED: 0,
+                    AREA_COL_EARLY_NMJ: 250_000.0,
+                    AREA_COL_MUSCLE: 250_000.0,
+                    AREA_COL_NEURON: 250_000.0,
+                    AREA_COL_ORPHANED: 250_000.0,
+                }
+            ]
+        )
+        out = _append_zone_abundance_columns(stats)
+        expected = 5 / 1_000_000.0 * UM2_PER_MM2
+        self.assertAlmostEqual(out[ABUNDANCE_COL_EARLY_NMJ].iloc[0], expected)
+        self.assertEqual(UM2_PER_MM2, 1_000_000.0)
+        self.assertEqual(SPOT_DENSITY_PER_MM2_LABEL, "Spots / mm²")
+
+    def test_build_aggregate_dashboard_figure_smoke(self):
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        import pandas as pd
+
+        from nmj_master_dashboard import (
+            ABUNDANCE_COL_EARLY_NMJ,
+            AREA_COL_EARLY_NMJ,
+            AREA_COL_MUSCLE,
+            AREA_COL_NEURON,
+            AREA_COL_ORPHANED,
+            BTX_CLASS_EARLY_NMJ,
+            BTX_CLASS_MUSCLE,
+            BTX_CLASS_NEURON,
+            BTX_CLASS_ORPHANED,
+            BTX_SIGNAL_CLASS_ORDER,
+            build_aggregate_batch_dashboard_figure,
+            ensure_roundness_column,
+            normalize_btx_signal_classes,
+        )
+
+        rows = []
+        for img_i, folder in enumerate(("FolderA", "FolderB")):
+            for spot_i in range(6):
+                rows.append(
+                    {
+                        "SOURCE_FOLDER": folder,
+                        "SOURCE_IMAGE": f"img{img_i}.czi",
+                        "MEAN_INTENSITY": 500.0 + spot_i * 100,
+                        "RADIUS": 0.5 + 0.1 * spot_i,
+                        "ROUNDNESS": 0.7,
+                        "AREA_PX": 20,
+                        "Dist_to_Muscle_um": float(spot_i),
+                        "Dist_to_Neuron_um": float(5 - spot_i),
+                        "INNERVATION_OVERLAP_PCT": 50.0,
+                        "BTX signal class": BTX_SIGNAL_CLASS_ORDER[spot_i % 4],
+                        "is_NMJ": spot_i % 4 == 0,
+                    }
+                )
+        master_df = ensure_roundness_column(normalize_btx_signal_classes(pd.DataFrame(rows)))
+        file_stats = [
+            {
+                "File": "img0.czi",
+                "Folder": "FolderA",
+                BTX_CLASS_EARLY_NMJ: 2,
+                BTX_CLASS_MUSCLE: 2,
+                BTX_CLASS_NEURON: 1,
+                BTX_CLASS_ORPHANED: 1,
+                "Area_early_NMJ_like_um2": 100_000.0,
+                "Area_Muscle_associated_um2": 100_000.0,
+                "Area_Neuron_associated_um2": 100_000.0,
+                "Area_Orphaned_um2": 100_000.0,
+            },
+            {
+                "File": "img1.czi",
+                "Folder": "FolderB",
+                BTX_CLASS_EARLY_NMJ: 1,
+                BTX_CLASS_MUSCLE: 1,
+                BTX_CLASS_NEURON: 2,
+                BTX_CLASS_ORPHANED: 2,
+                "Area_early_NMJ_like_um2": 200_000.0,
+                "Area_Muscle_associated_um2": 200_000.0,
+                "Area_Neuron_associated_um2": 200_000.0,
+                "Area_Orphaned_um2": 200_000.0,
+            },
+        ]
+
+        fig, panel_specs, meta = build_aggregate_batch_dashboard_figure(
+            master_df,
+            distance_threshold_um=1.0,
+            run_all=True,
+            all_file_stats=file_stats,
+        )
+        try:
+            self.assertIsNotNone(fig)
+            self.assertGreaterEqual(len(panel_specs), 9)
+            panel_names = [name for name, _axes in panel_specs]
+            self.assertIn("panel06_global_intensity_otsu", panel_names)
+            self.assertIn("panel07_total_spots_otsu", panel_names)
+            self.assertNotIn("panel06_global_intensity_all", panel_names)
+            self.assertIsNotNone(meta.get("global_btx_intensity_otsu"))
+        finally:
+            plt.close(fig)
+
+    def test_regenerate_from_saved_master_csv_if_present(self):
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        import pandas as pd
+
+        from nmj_master_dashboard import (
+            build_aggregate_batch_dashboard_figure,
+            ensure_roundness_column,
+            normalize_btx_signal_classes,
+            normalize_file_stats_columns,
+        )
+
+        master_csv = os.path.join(
+            ROOT,
+            "output",
+            "20260627_072037",
+            "ALL_FOLDERS_MASTER_RESULTS_thrConservative.csv",
+        )
+        if not os.path.isfile(master_csv):
+            self.skipTest("saved master CSV not present")
+
+        master_df = ensure_roundness_column(
+            normalize_btx_signal_classes(pd.read_csv(master_csv))
+        )
+        file_stats_csv = master_csv.replace(
+            "ALL_FOLDERS_MASTER_RESULTS", "ALL_FOLDERS_FILE_STATS"
+        )
+        all_file_stats = []
+        if os.path.isfile(file_stats_csv):
+            all_file_stats = normalize_file_stats_columns(
+                pd.read_csv(file_stats_csv)
+            ).to_dict("records")
+
+        fig, panel_specs, meta = build_aggregate_batch_dashboard_figure(
+            master_df,
+            distance_threshold_um=1.0,
+            run_all=True,
+            all_file_stats=all_file_stats,
+        )
+        try:
+            self.assertGreater(len(master_df), 0)
+            self.assertGreaterEqual(len(panel_specs), 9)
+            self.assertIsNotNone(meta.get("global_btx_intensity_otsu"))
+        finally:
+            plt.close(fig)
 
 
 def smoke_test_one_image() -> None:
@@ -153,14 +328,18 @@ def smoke_test_one_image() -> None:
     import numpy as np
     import pandas as pd
 
-    from nmj_master_dashboard import load_confocal_image
-
     data_root = os.path.join(ROOT, "data")
     dataset = os.path.join(data_root, "SP11BTXSAA")
     czi_name = "0722Mplate-01(20).czi"
     czi_path = os.path.join(dataset, czi_name)
     if not os.path.isfile(czi_path):
         print("SKIP smoke test: sample CZI not found")
+        return
+
+    try:
+        from nmj_master_dashboard import load_confocal_image
+    except ImportError as exc:
+        print(f"SKIP smoke test: optional imaging dependency missing ({exc})")
         return
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -171,10 +350,14 @@ def smoke_test_one_image() -> None:
         with open(os.path.join(dataset, "channel_mapping_config.json"), encoding="utf-8") as jf:
             fc = json.load(jf)[czi_name]
 
-        channels = load_confocal_image(
-            czi_path,
-            channel_indices=[fc["m"], fc["n"], fc["b"]],
-        )
+        try:
+            channels = load_confocal_image(
+                czi_path,
+                channel_indices=[fc["m"], fc["n"], fc["b"]],
+            )
+        except ImportError as exc:
+            print(f"SKIP smoke test: optional imaging dependency missing ({exc})")
+            return
         btx = channels[fc["b"]]
         spot_count = int(np.count_nonzero(btx > np.percentile(btx, 99.5)))
 
@@ -202,6 +385,7 @@ def smoke_test_one_image() -> None:
 if __name__ == "__main__":
     suite = unittest.defaultTestLoader.loadTestsFromTestCase(RunOutputHelpersTest)
     suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(OtsuAbundanceStatsTest))
+    suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(DashboardFunctionalityTest))
     result = unittest.TextTestRunner(verbosity=2).run(suite)
     if not result.wasSuccessful():
         sys.exit(1)

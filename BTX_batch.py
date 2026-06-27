@@ -27,6 +27,8 @@ from nmj_master_dashboard import (
     AREA_COL_MUSCLE,
     AREA_COL_NEURON,
     AREA_COL_ORPHANED,
+    UM2_PER_MM2,
+    SPOT_DENSITY_PER_MM2_LABEL,
     MIN_PIXELS_FOR_SHAPE,
     RESOLUTION_CLASS_LOWRES_UM_PER_PIXEL,
     ROUNDNESS_KRUSKAL_CLASSES,
@@ -823,10 +825,10 @@ if run_current or run_all:
             c_n_only = int(near_n_only)
             c_orphan = int(orphaned)
 
-            dens_nmj = (c_nmj / area_nmj_um2 * 1000) if area_nmj_um2 > 0 else 0.0
-            dens_m = (c_m / area_m_um2 * 1000) if area_m_um2 > 0 else 0.0
-            dens_n = (c_n_only / area_n_um2 * 1000) if area_n_um2 > 0 else 0.0
-            dens_o = (c_orphan / area_o_um2 * 1000) if area_o_um2 > 0 else 0.0
+            dens_nmj = (c_nmj / area_nmj_um2 * UM2_PER_MM2) if area_nmj_um2 > 0 else 0.0
+            dens_m = (c_m / area_m_um2 * UM2_PER_MM2) if area_m_um2 > 0 else 0.0
+            dens_n = (c_n_only / area_n_um2 * UM2_PER_MM2) if area_n_um2 > 0 else 0.0
+            dens_o = (c_orphan / area_o_um2 * UM2_PER_MM2) if area_o_um2 > 0 else 0.0
 
             file_stem = os.path.splitext(czi_file)[0]
             out_csv = mirror_dataset_output_path(
@@ -1052,8 +1054,8 @@ if run_current or run_all:
                 legend=False,
                 ax=ax_unused_1,
             )
-            ax_unused_1.set_title("11. BTX Density (Spots/1000 μm²)")
-            ax_unused_1.set_ylabel("Spots / 1000 μm²")
+            ax_unused_1.set_title(f"11. BTX Density ({SPOT_DENSITY_PER_MM2_LABEL})")
+            ax_unused_1.set_ylabel(SPOT_DENSITY_PER_MM2_LABEL)
             ax_unused_1.set_xlabel("")
             ax_unused_2.axis('off')
             
