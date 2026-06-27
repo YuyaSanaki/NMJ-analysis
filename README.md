@@ -224,6 +224,7 @@ output/20260627_053347/
 ├── ALL_FOLDERS_MASTER_RESULTS_thrConservative.csv
 ├── ALL_FOLDERS_STAT_SUMMARY_thrConservative.csv
 ├── ALL_FOLDERS_IMAGE_LEVEL_MEDIANS_thrConservative.csv
+├── ALL_FOLDERS_INTENSITY_PAIRED_IMAGES_thrConservative.csv
 ├── ALL_FOLDERS_OTSU_DIM_NOISE_REJECTION_thrConservative.csv
 ├── ALL_FOLDERS_FILE_STATS_thrConservative.csv
 ├── ALL_FOLDERS_SUMMARY_TABLE_thrConservative.csv
@@ -245,6 +246,7 @@ output/20260627_053347/
 | `*_SUMMARY_TABLE*.csv` | Per-folder aggregates (ALL Folders only) |
 | `*_STAT_SUMMARY*.csv` | All statistical tests with `level` column |
 | `*_IMAGE_LEVEL_MEDIANS*.csv` | Per-image class medians (proximity, intensity, roundness) |
+| `*_INTENSITY_PAIRED_IMAGES*.csv` | Images with both early NMJ-like and Orphaned spots (paired Wilcoxon cohort) |
 | `*_OTSU_DIM_NOISE_REJECTION*.csv` | % spots above global Otsu by class + interpretation |
 | `*_SUMMARY*.png` | Aggregate dashboard figure |
 | `run_config.json` | Run parameters, paths, image count |
@@ -270,7 +272,7 @@ Per-image proximity/intensity titles use **spot-level** tests (exploratory). Use
 
 | Row | Left | Right |
 |-----|------|-------|
-| 0 | BTX intensity histogram + global Otsu (full width) | |
+| 0 | BTX intensity histogram + global Otsu (all images) | Same panels for paired NMJ vs Orphan cohort only |
 | 1 | Proximity scatter (image-level Kruskal title) | Size KDE |
 | 2 | Roundness KDE | Innervation overlap |
 | 3 | Intensity KDE (Otsu-filtered) | Total spot count bar chart (Otsu-filtered) |
@@ -307,6 +309,8 @@ Significance stars: `***` p < 0.001 · `**` p < 0.01 · `*` p < 0.05 · `ns` p �
 | Do classes differ in proximity to muscle/neuron? | Kruskal–Wallis on per-image class medians + Mann–Whitney posthoc (early NMJ-like vs others) |
 | Does roundness differ across classes? | Kruskal–Wallis on per-image medians (3 classes, shape-QC spots) |
 | Is early NMJ-like brighter than Orphaned **in the same image**? | **Wilcoxon signed-rank (paired)** on class medians; Otsu-filtered variant included |
+
+The paired Wilcoxon uses only images that contain both early NMJ-like and Orphaned spots. Those filenames are listed in `*_INTENSITY_PAIRED_IMAGES*.csv`; the right-hand histogram in row 0 of `*_SUMMARY*.png` plots spots from the same cohort (global Otsu threshold is unchanged).
 | Is the fraction above Otsu higher for early NMJ-like vs Orphaned? | Paired Wilcoxon on per-image fractions |
 | Is BTX enriched in NMJ-like/muscle zones? | Friedman on per-image zone abundance + Conover–Iman posthoc |
 
@@ -343,9 +347,14 @@ Reports the **%** of spots in each class with `MEAN_INTENSITY ≥` the global ba
 Re-build aggregate PNG/PDFs from a saved master CSV **without** re-reading images:
 
 ```bash
-python regenerate_all_folders_panel_pdfs.py \
-  output/20260627_053347/ALL_FOLDERS_MASTER_RESULTS_thrConservative.csv
+docker compose --profile batch run --rm --no-deps multiple-image-nmj-analysis \
+  python3 regenerate_all_folders_panel_pdfs.py \
+  output/20260627_072037/ALL_FOLDERS_MASTER_RESULTS_thrConservative.csv
 ```
+
+`--no-deps` runs a one-off container (does not start the Streamlit UI). Outputs are written beside the master CSV with a `_dashboard_regen` stem unless you pass `--output-stem`.
+
+Use a path **relative to the repo root** (the project is mounted at `/app` in the container). If you pass a host absolute path instead, quote it when the path contains spaces (e.g. `".../Marina appeal/NMJ-analysis/output/..."`).
 
 Friedman / zone-abundance panels need the companion `*_FILE_STATS*.csv` (auto-detected if beside the master file).
 

@@ -284,6 +284,8 @@ class DashboardFunctionalityTest(unittest.TestCase):
             self.assertIsNotNone(fig)
             self.assertGreaterEqual(len(panel_specs), 9)
             panel_names = [name for name, _axes in panel_specs]
+            self.assertIn("panel01a_global_intensity_histogram_all", panel_names)
+            self.assertIn("panel01b_global_intensity_histogram_paired", panel_names)
             self.assertIn("panel06_global_intensity_otsu", panel_names)
             self.assertIn("panel07_total_spots_otsu", panel_names)
             self.assertNotIn("panel06_global_intensity_all", panel_names)

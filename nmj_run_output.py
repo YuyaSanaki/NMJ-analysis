@@ -149,7 +149,7 @@ def render_streamlit_download_section(st, run_dir: str, *, title: str = "📥 Do
     priority += [
         rel
         for rel, _ in files
-        if rel.endswith(".csv") or ("SUMMARY" in rel and rel.endswith(".png")) or "MASTER_RESULTS" in rel or "STAT_SUMMARY" in rel or "IMAGE_LEVEL_MEDIANS" in rel or "OTSU_DIM_NOISE" in rel
+        if rel.endswith(".csv") or ("SUMMARY" in rel and rel.endswith(".png")) or "MASTER_RESULTS" in rel or "STAT_SUMMARY" in rel or "IMAGE_LEVEL_MEDIANS" in rel or "INTENSITY_PAIRED_IMAGES" in rel or "OTSU_DIM_NOISE" in rel
     ]
     priority = list(dict.fromkeys(priority))
 

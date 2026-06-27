@@ -1196,7 +1196,7 @@ if run_current or run_all:
             all_file_stats=all_file_stats,
         )
 
-        stat_summary_df, image_medians_df, otsu_dim_noise_df = build_batch_stat_summary_dataframe(
+        stat_summary_df, image_medians_df, otsu_dim_noise_df, paired_intensity_images_df = build_batch_stat_summary_dataframe(
             master_df,
             distance_threshold_um=distance_threshold_um,
             dash_meta=dash_meta,
@@ -1206,10 +1206,16 @@ if run_current or run_all:
             stat_summary_csv = os.path.join(run_dir, f"ALL_FOLDERS_STAT_SUMMARY{_thr_tag}.csv")
             image_medians_csv = os.path.join(run_dir, f"ALL_FOLDERS_IMAGE_LEVEL_MEDIANS{_thr_tag}.csv")
             otsu_rejection_csv = os.path.join(run_dir, f"ALL_FOLDERS_OTSU_DIM_NOISE_REJECTION{_thr_tag}.csv")
+            paired_intensity_images_csv = os.path.join(
+                run_dir, f"ALL_FOLDERS_INTENSITY_PAIRED_IMAGES{_thr_tag}.csv"
+            )
         else:
             stat_summary_csv = os.path.join(run_dir, f"BATCH_STAT_SUMMARY{_thr_tag}.csv")
             image_medians_csv = os.path.join(run_dir, f"BATCH_IMAGE_LEVEL_MEDIANS{_thr_tag}.csv")
             otsu_rejection_csv = os.path.join(run_dir, f"BATCH_OTSU_DIM_NOISE_REJECTION{_thr_tag}.csv")
+            paired_intensity_images_csv = os.path.join(
+                run_dir, f"BATCH_INTENSITY_PAIRED_IMAGES{_thr_tag}.csv"
+            )
         stat_summary_df.to_csv(stat_summary_csv, index=False)
         if len(image_medians_df) > 0:
             image_medians_df.to_csv(image_medians_csv, index=False)
@@ -1217,6 +1223,12 @@ if run_current or run_all:
         if len(otsu_dim_noise_df) > 0:
             otsu_dim_noise_df.to_csv(otsu_rejection_csv, index=False)
             st.success(f"Otsu dim-noise rejection table saved: `{otsu_rejection_csv}`")
+        if len(paired_intensity_images_df) > 0:
+            paired_intensity_images_df.to_csv(paired_intensity_images_csv, index=False)
+            st.success(
+                f"Intensity paired-comparison image list saved: `{paired_intensity_images_csv}` "
+                f"({len(paired_intensity_images_df)} images)"
+            )
         st.success(f"Statistical test summary saved: `{stat_summary_csv}`")
 
         global_otsu = dash_meta.get("global_btx_intensity_otsu")
