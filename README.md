@@ -42,7 +42,7 @@ Plain `docker compose up` with **no** `--profile` does not start either app (by 
    - **Validation Plots:** Enabling the option to save per-image NMJ plot PNGs during batch processing will consume additional memory, but it generates a valuable validation plot for every individual image.
    - **Spot detection Threshold:** If the muscle or nerve staining appears faint, increase the DoG threshold (Detection Threshold and DoG sigma). Because this adjustment can introduce artifacts, be sure to review the per-image NMJ plots to verify your results.
    - **NMJ Logic:** This setting defines the acceptable distance from the BTX signal to assume that the BTX staining is correctly associated with the surrounding proximity tissues (i.e., the muscle and nerve).
-   - **The output** is written under `data/<dataset>/` next to your inputs, with batch “ALL Folders” summaries under `data/` when you use that mode.
+   - **The output** is written under `output/<YYYYMMDD_HHMMSS>/` (timestamped run folder). Each run also saves `run_config.json` and a snapshot of `channel_mapping_config.json`. Only `.czi` files and the live channel config remain under `data/`.
 
 
 5. **Stop:** `Ctrl+C` in the terminal, or 
@@ -112,7 +112,7 @@ This replaces the legacy perimeter-based `CIRCULARITY` (`4πA/P²`), which was u
 
 **Resolution gating:** any spot whose segmented mask has fewer than `MIN_PIXELS_FOR_SHAPE = 20` pixels gets `ROUNDNESS = NaN`. These rows are excluded from Roundness KDE plots via `dropna`, preventing noisy low-resolution spots from flattening the distribution.
 
-**Backward compatibility:** CSVs written before the terminology update that contain a `CIRCULARITY` column (but no `ROUNDNESS` column) are automatically aliased — `ROUNDNESS = CIRCULARITY` — so existing result files still load correctly in the summary dashboards.
+**Backward compatibility:** Older result CSVs are normalized on load: legacy `CIRCULARITY` → `ROUNDNESS`; legacy BTX class labels (`NMJ`, `Aneural AChR clusters`, etc.) → current names; legacy file-stats column names (`NMJs (Both)`, `Density_NMJ`, …) → current names.
 
 ### 5. BTX signal classification (4 classes)
 
@@ -120,9 +120,9 @@ Each detected spot is assigned one of four classes based on its edge-corrected d
 
 | Class | Color | Condition |
 |-------|-------|-----------|
-| **NMJ** | red | near both muscle **and** neuron |
-| **Aneural AChR clusters** | green | near muscle only |
-| **Neuron-associated BTX signal** | blue | near neuron only |
+| **early NMJ-like** | red | near both muscle **and** neuron |
+| **Muscle-associated** | green | near muscle only |
+| **Neuron-associated** | blue | near neuron only |
 | **Orphaned** | gray | near neither mask |
 
 "Near" is defined by the **Functional NMJ Boundary (μm)** slider (default `1.0 µm`), applied to edge-corrected distances.
@@ -132,60 +132,99 @@ Each detected spot is assigned one of four classes based on its edge-corrected d
 
 All p-values are annotated with significance stars: `***` p < 0.001 · `**` p < 0.01 · `*` p < 0.05 · `ns` p ≥ 0.05.
 
-**Where each test appears**
+**Methods (inference unit).** Because multiple BTX puncta within a single image are not independent, primary statistical comparisons were performed on per-image summary statistics (e.g. class-specific medians); spot-level tests are reported for visualization only.
 
-| Test | What is compared | Batch: per-image `*_NMJ_Plot.png` | Batch: aggregate `BATCH_SUMMARY*.png` / `ALL_FOLDERS_SUMMARY*.png` | Single-image `BTX.py` |
-|------|------------------|-----------------------------------|----------------------------------------------------------------------|-------------------------|
-| Mann–Whitney (docking) | `Dist_to_Neuron_um`: **NMJ** vs **Aneural AChR clusters** (`alternative="less"`) | Panel **1** title | Panel **1** (global proximity) title | Panel **1** title + Results markdown |
-| Kruskal–Wallis (roundness) | `ROUNDNESS`: **NMJ** vs **Aneural** vs **Neuron-associated** (3 groups) | Panel **3** title | Panel **3** title | Panel **3**: plot only (title is static) |
-| Mann–Whitney (intensity) | `MEAN_INTENSITY`: **NMJ** vs **Orphaned** (`alternative="greater"`, all spots pooled) | Panel **5** title | Panel **5** title + optional enrichment line in Streamlit | **Not** computed in the single-image UI; Panel **5** title is static |
-| Friedman (zone density) | Per-image area-normalised densities: Muscle vs Neuron vs Orphan zones | — | Panel **6** (“BTX Enrichment”) when the batch run finishes | — |
+**Where results are saved**
 
-**Independence caveat:** Mann–Whitney and Kruskal–Wallis on pooled spots treat each spot as a unit; spots in one image are correlated. Use pooled p-values as **exploratory** unless you redesign (e.g. per-image summaries + mixed models). The **Friedman** test is explicitly **paired per image** (one row per image, three zone densities).
+| File | Description |
+|------|-------------|
+| `*_STAT_SUMMARY[_thrTag].csv` | Full table: metric, comparison, test, p-value, `level` column |
+| `*_IMAGE_LEVEL_MEDIANS[_thrTag].csv` | Per-image, per-class medians used for primary tests |
+| `*_OTSU_DIM_NOISE_REJECTION[_thrTag].csv` | Spot composition table: % of each class above global Otsu |
+| Aggregate `*_SUMMARY[_thrTag].png` titles | Image-level Kruskal–Wallis on proximity when batch data includes `SOURCE_IMAGE` |
 
-**Proximity scatter (Panel 1):** when many spots share the same edge-corrected distance (often after clipping to 0 µm), the scatter plot applies a **small display-only jitter** so markers do not stack invisibly; **CSV values and marginal KDEs use the true coordinates**. Total spot count `n=` in the title matches the number of detected spots.
+**`level` column in STAT_SUMMARY**
 
----
+| Level | Role |
+|-------|------|
+| `primary_image_level` | **Primary inference** — tests on per-image class medians (unit of replication = image) |
+| `primary_posthoc` | Pairwise follow-ups to primary tests (Holm–Bonferroni adjusted) |
+| `primary_sensitivity` | Unpaired image-level alternatives (e.g. Mann–Whitney across different image sets) |
+| `exploratory_spot_pooled` | **Exploratory only** — all spots pooled; supports plot titles, not primary claims |
 
-**Synaptic docking precision (Mann–Whitney U) — Panel 1**
+**Primary tests (batch)**
 
-*What it asks:* Among spots that are near muscle, do true NMJs (also near the neuron channel) sit **closer to the neuron mask** than muscle-only “Aneural AChR clusters”? That is a direct readout of tighter synaptic docking in physical micrometers.
+| Metric | Comparison | Test |
+|--------|------------|------|
+| Proximity (`Dist_to_Muscle_um`, `Dist_to_Neuron_um`) | 4 BTX classes | Kruskal–Wallis on per-image class medians; Mann–Whitney posthoc early NMJ-like vs others |
+| Roundness | early NMJ-like vs Muscle-associated vs Neuron-associated | Kruskal–Wallis on per-image class medians |
+| BTX intensity | early NMJ-like vs Orphaned | **Wilcoxon signed-rank (paired within image)** on class medians; unpaired Mann–Whitney in `primary_sensitivity` |
+| Fraction above Otsu | early NMJ-like vs Orphaned (paired within image) | Wilcoxon on per-image fraction of spots ≥ global Otsu |
+| Zone abundance | 4 zones per image | Friedman (repeated measures); Conover–Iman posthoc |
 
-*How it works:* Edge distances `Dist_to_Neuron_um` (already stored per spot) are compared between the **NMJ** class and the **Aneural AChR clusters** class. A one-sided Mann–Whitney U test (`scipy.stats.mannwhitneyu`, `alternative="less"`) asks whether NMJ distances are stochastically **smaller** than aneural distances. At least 3 spots per group are required; fewer images show “Insufficient clusters” in the panel title.
+Exploratory spot-pooled Kruskal / Mann–Whitney rows for proximity, roundness, and intensity are included in the same CSV for comparison with figure KDEs.
 
-Spots within one field of view are not statistically independent; treat the p-value as **exploratory** unless you aggregate appropriately (e.g. per-image effect sizes or hierarchical models).
+**Single-image app (`BTX.py`):** proximity panel titles use spot-level Kruskal–Wallis (no `SOURCE_IMAGE` column). Use the batch pipeline and `STAT_SUMMARY` for publication inference.
 
-The p-value, stars, and group medians appear in the **Panel 1 – Proximity Scatter** title for every individual image, and the same logic applies to the global all-spots summary when Panel 1 pools many images.
-
----
-
-**Mann-Whitney U Test (receptor intensity) — Panel 5**
-
-*What it asks:* Are **NMJ** spots brighter than **Orphaned** spots when all detected spots are pooled?
-
-*How it works:* All `MEAN_INTENSITY` values are pooled by class, then NMJ is compared against Orphaned spots using one-sided Mann-Whitney U (`scipy.stats.mannwhitneyu`, `alternative="greater"`). This directly tests whether the NMJ intensity distribution is shifted to higher values than the orphaned/background control distribution, without reducing each image to a median first. At least 3 spots per class are required; otherwise the panel reports "Insufficient Clusters".
-
-The p-value, significance star, and class medians appear in the **Panel 5 – Receptor Intensity KDE** title on **batch** figures (e.g. `Mann-Whitney P = 0.0031 **`). The single-image app (`BTX.py`) does not run this test in Streamlit yet; use the batch pipeline for that summary.
-
----
-
-**Kruskal-Wallis Test (roundness morphology) — Panel 3**
-
-*What it asks:* Does receptor-cluster morphology differ across the three biologically relevant environments: **NMJ**, **Aneural AChR clusters**, and **Neuron-associated BTX signal**?
-
-*How it works:* `ROUNDNESS` is compared across the three groups using a 3-way Kruskal-Wallis H-test (`scipy.stats.kruskal`). Quality control matches the plotting logic: only spots with `AREA_PX >= MIN_PIXELS_FOR_SHAPE` and non-null `ROUNDNESS` are included; Orphaned spots are excluded from this 3-way morphology test. At least 3 valid spots per group are required, otherwise the title reports insufficient group size.
-
-The p-value, significance star, and all three group medians appear in the **Panel 3 – Roundness KDE** title in **batch** outputs. The single-image app plots the same three classes but leaves a static axis title (no Kruskal line in `BTX.py` yet).
+**Proximity scatter:** when many spots share the same edge-corrected distance (often after clipping to 0 µm), the scatter plot applies a **small display-only jitter** so markers do not stack invisibly; **CSV values and marginal KDEs use the true coordinates**.
 
 ---
 
-**Friedman Test (BTX zone specificity) — batch aggregate dashboard, Panel 6**
+**Kruskal–Wallis (proximity) — aggregate Panel 1**
 
-*What it asks:* Does BTX spot density differ significantly across the three tissue zones (muscle zone, neuron-only zone, and orphan zone) when compared **within the same image**?
+*What it asks:* Do edge-corrected distances to muscle and neuron masks differ across the four BTX signal classes?
 
-*How it works:* For each image, spots are counted in each zone and divided by the zone's area (µm²) to give an area-normalised density. This produces three matched columns across images (one row = one image, three columns = three zone densities). The Friedman test (`scipy.stats.friedmanchisquare`) is a non-parametric repeated-measures test that ranks the three densities within each image. Because each image serves as its own block, between-image variability in overall BTX signal strength is partially controlled when comparing zones.
+*Primary inference:* For each image and class, the median distance is computed across spots; Kruskal–Wallis compares those image-level medians across classes (≥ 3 images per class required). Mann–Whitney posthoc tests compare early NMJ-like image medians to each other class (Holm–Bonferroni adjusted).
 
-A significant result suggests BTX staining is not uniformly distributed across the zones. The p-value and star appear in the **Panel 6 – BTX Enrichment** title on the **saved batch summary figure** (`BATCH_SUMMARY*.png` or `ALL_FOLDERS_SUMMARY*.png`). This is **not** the same “Panel 6” as in the per-image `*_NMJ_Plot.png` grid (that figure uses different panel numbering).
+*Exploratory:* The same test on all spots pooled appears in `STAT_SUMMARY` as `exploratory_spot_pooled` and supports marginal KDE visualization.
+
+---
+
+**Kruskal–Wallis (roundness) — Panel 3**
+
+*What it asks:* Does receptor-cluster morphology differ across **early NMJ-like**, **Muscle-associated**, and **Neuron-associated**?
+
+*Primary inference:* Per-image class medians of `ROUNDNESS` (spots with `AREA_PX ≥ MIN_PIXELS_FOR_SHAPE` only). Exploratory spot-pooled Kruskal is also recorded.
+
+---
+
+**Mann–Whitney U (intensity) — Panel 5**
+
+*What it asks:* Are **early NMJ-like** spots brighter than **Orphaned** spots?
+
+*Primary inference:* **Paired Wilcoxon signed-rank** on per-image class medians (`alternative="greater"`) in images that contain both classes — this tests whether synaptic/muscle-associated puncta are brighter than distant puncta **within the same field of view**. Unpaired Mann–Whitney rows are retained as `primary_sensitivity`. Otsu-filtered paired variants use only spots at/above the global batch Otsu. Exploratory spot-pooled Mann–Whitney rows are included for plot titles.
+
+---
+
+**Otsu dim-noise rejection — `*_OTSU_DIM_NOISE_REJECTION[_thrTag].csv`**
+
+BTX staining can be **dirty**: many detected puncta are non-specific haze or noise. True AChR-related signal is identified by **converging evidence** — spatial co-localization (muscle / neuron masks), zone enrichment (Friedman), and intensity contrast — not by Otsu alone.
+
+The dim-noise rejection table reports, for each BTX signal class, what fraction of detected spots exceed the **global intensity Otsu** threshold computed across all spots in the batch run. Example interpretation:
+
+| Class | Typical pattern | How to read it |
+|-------|-----------------|----------------|
+| **early NMJ-like** | High % above Otsu (~80–90%) | Synaptic puncta near muscle and neuron are predominantly bright — consistent with specific AChR staining rather than dim haze. |
+| **Muscle-associated** | High % above Otsu (~75–85%) | Muscle-proximal AChR clusters pass the intensity gate; supports that muscle-associated signal is real amid dirty stain. |
+| **Neuron-associated** | High % above Otsu (~80–90%) | Neuron-proximal puncta are mostly bright; may include presynaptic or developing terminals, not just noise. |
+| **Orphaned** | Low % above Otsu (~25–40%) | Puncta far from both masks are mostly **dim** — consistent with non-specific background. The minority above Otsu may include brighter immature or mislocalized BTX, so Orphaned is **not** a pure noise class. |
+
+**Important caveats**
+
+1. **Descriptive, spot-pooled:** The table counts spots, not images. It supports the biological story but does not replace image-level tests (spots within one image are correlated).
+2. **Otsu is a dim-spot filter, not a synapse classifier:** A bright spot far from muscle/neuron still passes Otsu but remains Orphaned spatially. Conversely, dim true AChR could fall below Otsu. Spatial class + zone Friedman remain the strongest primary evidence.
+3. **Orphaned heterogeneity:** Low Otsu pass rate does not mean Orphaned is “clean background” — it means most distant puncta are dim; some may be biological.
+4. **Paired statistical follow-up:** `STAT_SUMMARY` includes a **paired Wilcoxon** on per-image fraction above Otsu (early NMJ-like vs Orphaned) to test whether synaptic puncta are more often “bright enough” than distant puncta within the same image.
+
+**Recommended narrative for a paper:** Global Otsu separates predominantly dim distant puncta from predominantly bright muscle/synapse-associated puncta; paired image-level Wilcoxon confirms early NMJ-like > Orphaned intensity within fields that contain both; Friedman zone abundance confirms BTX is enriched at NMJ/muscle zones — together supporting identification of true AChR signal amid dirty staining.
+
+---
+
+**Friedman (zone abundance) — aggregate abundance panels**
+
+*What it asks:* Does BTX spot density differ across tissue zones **within the same image**?
+
+*How it works:* Per-image zone counts are area-normalised (spots per 1000 µm²). Friedman tests the four zone abundances as repeated measures; Conover–Iman posthoc with Holm adjustment. A second Friedman uses only spots at/above the global intensity Otsu threshold. These are tagged `primary_image_level` / `primary_posthoc` in `STAT_SUMMARY`.
 
 ---
 
@@ -207,45 +246,45 @@ With **`docker compose --profile batch up --build`**:
 
 ## Outputs (batch)
 
-Artifacts are written next to the data. **ALL Folders** runs additionally write aggregate files in the **project root** (the app working directory, `/app` in Docker).
+Each run creates a timestamped folder: `output/<YYYYMMDD_HHMMSS>/`. Dataset subfolders mirror your `data/` layout; aggregate files sit at the run root. Streamlit offers ZIP and per-file downloads when the run finishes.
 
 When **Auto Threshold per image** is enabled, filenames include a sensitivity tag so Conservative and High runs do not overwrite each other: `_thrConservative` or `_thrHigh` (e.g. `ALL_FOLDERS_MASTER_RESULTS_thrHigh.csv`). With manual threshold, that tag is omitted.
 
 | File | Scope | Description |
 |------|-------|-------------|
-| `ALL_FOLDERS_MASTER_RESULTS[_thrTag].csv` | project root | Combined spot table for all-folder runs, with `SOURCE_FOLDER` and `SOURCE_IMAGE` columns |
-| `ALL_FOLDERS_SUMMARY[_thrTag].png` | project root | Aggregate dashboard (3×2 or 4×2 when **ALL Folders**; includes docking / Kruskal / intensity titles and Friedman panel 6) |
-| `ALL_FOLDERS_SUMMARY_TABLE[_thrTag].csv` | project root | Per-folder summary statistics |
-| `BATCH_MASTER_RESULTS[_thrTag].csv` | selected folder | Combined spot table for current-folder runs |
-| `BATCH_SUMMARY[_thrTag].png` | selected folder | Aggregate dashboard for the current folder |
-| `[Filename][_thrTag]_analysis.csv` | next to image | Per-image spot table |
-| `[Filename][_thrTag]_NMJ_Plot.png` | next to image | 10-panel figure (optional; can be disabled) |
-
-The per-run **batch summary metrics** table in Streamlit includes a **`Docking Mann-Whitney P`** column (synaptic docking test per image; `NaN` if fewer than 3 NMJ or 3 Aneural spots).
+| `run_config.json` | run root | Run metadata (thresholds, mode, timestamps) |
+| `channel_mapping_config.json` | run root | Snapshot of channel mappings used |
+| `ALL_FOLDERS_MASTER_RESULTS[_thrTag].csv` | run root | Combined spot table (ALL Folders), with `SOURCE_FOLDER`, `SOURCE_IMAGE`, `TOTAL_IMAGE_AREA_um2` |
+| `ALL_FOLDERS_STAT_SUMMARY[_thrTag].csv` | run root | Primary + exploratory statistical tests (`level` column) |
+| `ALL_FOLDERS_IMAGE_LEVEL_MEDIANS[_thrTag].csv` | run root | Per-image class medians for primary inference |
+| `ALL_FOLDERS_OTSU_DIM_NOISE_REJECTION[_thrTag].csv` | run root | % spots above global Otsu by class (dim-noise composition) |
+| `ALL_FOLDERS_SUMMARY[_thrTag].png` | run root | Aggregate dashboard figure |
+| `ALL_FOLDERS_SUMMARY_TABLE[_thrTag].csv` | run root | Per-folder summary statistics |
+| `ALL_FOLDERS_FILE_STATS[_thrTag].csv` | run root | Per-image zone-density table |
+| `BATCH_*` counterparts | run / dataset folder | Same artifacts for **Current Folder** runs |
+| `[Filename][_thrTag]_analysis.csv` | under dataset in run | Per-image spot table |
+| `[Filename][_thrTag]_NMJ_Plot.png` | under dataset in run | 10-panel figure (optional) |
 
 ### Per-image 10-panel figure layout (4 × 3 grid)
 
 | Row | Col 0 | Col 1 | Col 2 |
 |-----|-------|-------|-------|
-| 0 | **1. Proximity scatter** (synaptic docking Mann–Whitney P) + marginal KDEs | **2. Size KDE** (radius by class) | **3. Roundness KDE** (3-way Kruskal + medians) |
+| 0 | **1. Proximity scatter** (image-level Kruskal in batch aggregate) + marginal KDEs | **2. Size KDE** (radius by class) | **3. Roundness KDE** (3-way Kruskal + medians) |
 | 1 | **4. Innervation Distribution** (overlap %) | **5. Receptor Intensity KDE** (Mann-Whitney P) | **6. Raw BTX (L) \| Cleaned BTX (R)** |
 | 2 | **7. Cleaned BTX** | **8. Cleaned BTX + Detected Spots** | **9. Composite + All Spots** |
-| 3 | **10. Composite + Functional NMJs only** | *(density bar chart)* | *(unused)* |
+| 3 | **10. Composite + early NMJ-like only** | *(density bar chart)* | *(unused)* |
 
 ### Aggregate dashboard layout (`BATCH_SUMMARY*.png` / `ALL_FOLDERS_SUMMARY*.png`)
 
-After a batch finishes, these files mirror the **Global** figure shown in Streamlit: pooled spots from `BATCH_MASTER_RESULTS*.csv` or `ALL_FOLDERS_MASTER_RESULTS*.csv`.
+After a batch finishes, these files mirror the **Global** figure shown in Streamlit.
 
-| Slot | Content |
-|------|---------|
-| **1** | Global proximity scatter + marginal KDEs (docking Mann–Whitney in title) |
-| **2** | Global size KDE (radius by class) |
-| **3** | Global roundness KDE (3-way Kruskal in title) |
-| **4** | Global NMJ innervation histogram |
-| **5** | Global intensity KDE (NMJ vs Orphaned Mann–Whitney in title) |
-| **6** | BTX zone-density box/strip plot (Friedman P in title) |
-| **7** | *(ALL Folders only)* Per-image NMJ rate strip + folder means (full-width row below the 3×2 block) |
+| Row | Left | Right |
+|-----|------|-------|
+| **0** | BTX intensity histogram + global Otsu line (full width) | |
+| **1** | Proximity scatter + marginal KDEs (image-level Kruskal in title) | Size KDE |
+| **2** | Roundness KDE | Innervation overlap |
+| **3** | Intensity KDE (all spots) | Intensity KDE (Otsu-filtered) |
+| **4** | Zone abundance (all spots; Friedman in title) | Zone abundance (Otsu-filtered) |
+| **5** | *(ALL Folders only)* Per-image early NMJ-like rate control chart (full width) | |
 
-**Current folder** runs use a **3×2** grid (panels 1–6). **ALL Folders** adds a fourth row so the layout is **4×2** with the control chart spanning both columns.
-
-The helper `save_all_folders_summary_png()` in `BTX_batch.py` builds a **3×2** figure of **per-folder** summaries (NMJ rate, total spots, mean radius, mean innervation overlap, scatter of folder median muscle vs neuron distances) plus **panel 6**: pooled **All-Folders Proximity** with the same docking Mann–Whitney title as the live dashboard. It is **not** invoked by the Streamlit batch buttons; call it from your own script if you want that layout.
+**Current folder** runs use **5 rows** (no control chart). **ALL Folders** adds row 5 for the early NMJ-like rate control chart.

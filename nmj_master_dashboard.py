@@ -13,24 +13,89 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 
-BTX_SIGNAL_CLASS_ORDER = ("NMJ", "Aneural AChR clusters", "Neuron-associated BTX signal", "Orphaned")
+BTX_CLASS_EARLY_NMJ = "early NMJ-like"
+BTX_CLASS_MUSCLE = "Muscle-associated"
+BTX_CLASS_NEURON = "Neuron-associated"
+BTX_CLASS_ORPHANED = "Orphaned"
+
+BTX_SIGNAL_CLASS_ORDER = (
+    BTX_CLASS_EARLY_NMJ,
+    BTX_CLASS_MUSCLE,
+    BTX_CLASS_NEURON,
+    BTX_CLASS_ORPHANED,
+)
 BTX_SIGNAL_CLASS_PALETTE = {
-    "NMJ": "red",
-    "Aneural AChR clusters": "green",
-    "Neuron-associated BTX signal": "blue",
-    "Orphaned": "gray",
+    BTX_CLASS_EARLY_NMJ: "red",
+    BTX_CLASS_MUSCLE: "green",
+    BTX_CLASS_NEURON: "blue",
+    BTX_CLASS_ORPHANED: "gray",
 }
 
 BTX_SIGNAL_CLASS_LEGACY_ALIASES = {
-    "Muscle Only": "Aneural AChR clusters",
-    "Muscle only": "Aneural AChR clusters",
-    "Neuron Only": "Neuron-associated BTX signal",
-    "Neuron only": "Neuron-associated BTX signal",
+    "NMJ": BTX_CLASS_EARLY_NMJ,
+    "Aneural AChR clusters": BTX_CLASS_MUSCLE,
+    "Neuron-associated BTX signal": BTX_CLASS_NEURON,
+    "Orphan": BTX_CLASS_ORPHANED,
+    "Muscle Only": BTX_CLASS_MUSCLE,
+    "Muscle only": BTX_CLASS_MUSCLE,
+    "Neuron Only": BTX_CLASS_NEURON,
+    "Neuron only": BTX_CLASS_NEURON,
+}
+
+BTX_CLASS_COMPARISON_4WAY = (
+    f"{BTX_CLASS_EARLY_NMJ} vs {BTX_CLASS_MUSCLE} vs {BTX_CLASS_NEURON} vs {BTX_CLASS_ORPHANED}"
+)
+BTX_CLASS_COMPARISON_3WAY = (
+    f"{BTX_CLASS_EARLY_NMJ} vs {BTX_CLASS_MUSCLE} vs {BTX_CLASS_NEURON}"
+)
+BTX_CLASS_COMPARISON_INTENSITY = f"{BTX_CLASS_EARLY_NMJ} vs {BTX_CLASS_ORPHANED}"
+BTX_CLASS_COMPARISON_4WAY_ZONES = f"{BTX_CLASS_COMPARISON_4WAY} zones"
+
+DENSITY_COL_EARLY_NMJ = "Density_early_NMJ_like"
+DENSITY_COL_MUSCLE = "Density_Muscle_associated"
+DENSITY_COL_NEURON = "Density_Neuron_associated"
+DENSITY_COL_ORPHANED = "Density_Orphaned"
+
+AREA_COL_EARLY_NMJ = "Area_early_NMJ_like_um2"
+AREA_COL_MUSCLE = "Area_Muscle_associated_um2"
+AREA_COL_NEURON = "Area_Neuron_associated_um2"
+AREA_COL_ORPHANED = "Area_Orphaned_um2"
+
+ABUNDANCE_COL_EARLY_NMJ = "Abundance_early_NMJ_like"
+ABUNDANCE_COL_MUSCLE = "Abundance_Muscle_associated"
+ABUNDANCE_COL_NEURON = "Abundance_Neuron_associated"
+ABUNDANCE_COL_ORPHANED = "Abundance_Orphaned"
+
+FILE_STATS_COLUMN_LEGACY_ALIASES = {
+    "NMJs (Both)": BTX_CLASS_EARLY_NMJ,
+    "Near Aneural AChR clusters": BTX_CLASS_MUSCLE,
+    "Near Neuron-associated BTX signal": BTX_CLASS_NEURON,
+    "Density_NMJ": DENSITY_COL_EARLY_NMJ,
+    "Density_Muscle": DENSITY_COL_MUSCLE,
+    "Density_Neuron": DENSITY_COL_NEURON,
+    "Density_Orphan": DENSITY_COL_ORPHANED,
+    "Area_NMJ_um2": AREA_COL_EARLY_NMJ,
+    "Area_Muscle_um2": AREA_COL_MUSCLE,
+    "Area_Neuron_um2": AREA_COL_NEURON,
+    "Area_Orphan_um2": AREA_COL_ORPHANED,
+    "Abundance_NMJ": ABUNDANCE_COL_EARLY_NMJ,
+    "Abundance_Muscle": ABUNDANCE_COL_MUSCLE,
+    "Abundance_Neuron": ABUNDANCE_COL_NEURON,
+    "Abundance_Orphan": ABUNDANCE_COL_ORPHANED,
 }
 
 MIN_PIXELS_FOR_SHAPE = 20
 RESOLUTION_CLASS_LOWRES_UM_PER_PIXEL = 0.5
-ROUNDNESS_KRUSKAL_CLASSES = ("NMJ", "Aneural AChR clusters", "Neuron-associated BTX signal")
+ROUNDNESS_KRUSKAL_CLASSES = (BTX_CLASS_EARLY_NMJ, BTX_CLASS_MUSCLE, BTX_CLASS_NEURON)
+
+
+def normalize_file_stats_columns(df):
+    if df is None or len(df) == 0:
+        return df
+    rename = {k: v for k, v in FILE_STATS_COLUMN_LEGACY_ALIASES.items() if k in df.columns}
+    if not rename:
+        return df
+    return df.rename(columns=rename)
 
 
 def dataframe_for_roundness_kde_and_kruskal(df):
@@ -57,6 +122,58 @@ def normalize_btx_signal_classes(df):
     return out
 
 
+MASTER_RESULTS_LEADING_COLS = (
+    "SOURCE_FOLDER",
+    "SOURCE_IMAGE",
+    "TOTAL_IMAGE_AREA_um2",
+)
+
+
+def prepare_spot_table_for_master(
+    df,
+    *,
+    source_folder: str,
+    source_image: str,
+    total_image_area_um2: float,
+):
+    """Tag a per-image spot table for streaming into ``*_MASTER_RESULTS*.csv``."""
+    if df is None or len(df) == 0:
+        return df
+    out = df.copy()
+    out["SOURCE_FOLDER"] = source_folder
+    out["SOURCE_IMAGE"] = source_image
+    out["TOTAL_IMAGE_AREA_um2"] = float(total_image_area_um2)
+    cols = [c for c in MASTER_RESULTS_LEADING_COLS if c in out.columns]
+    cols += [c for c in out.columns if c not in cols]
+    return out[cols]
+
+
+def finalize_master_results_dataframe(df, *, file_stats: list[dict] | None = None):
+    """Normalize, backfill ``TOTAL_IMAGE_AREA_um2`` if needed, order columns, append global Otsu."""
+    if df is None or len(df) == 0:
+        return df
+    out = ensure_roundness_column(normalize_btx_signal_classes(df))
+    if "TOTAL_IMAGE_AREA_um2" not in out.columns:
+        out["TOTAL_IMAGE_AREA_um2"] = np.nan
+    if file_stats and {"SOURCE_FOLDER", "SOURCE_IMAGE"} <= set(out.columns):
+        lookup = {
+            (row.get("Folder"), row.get("File")): row.get("TOTAL_IMAGE_AREA_um2")
+            for row in file_stats
+            if row.get("TOTAL_IMAGE_AREA_um2") is not None
+        }
+        if lookup:
+            missing = out["TOTAL_IMAGE_AREA_um2"].isna()
+            if missing.any():
+                out.loc[missing, "TOTAL_IMAGE_AREA_um2"] = out.loc[missing].apply(
+                    lambda row: lookup.get((row["SOURCE_FOLDER"], row["SOURCE_IMAGE"]), np.nan),
+                    axis=1,
+                )
+    cols = [c for c in MASTER_RESULTS_LEADING_COLS if c in out.columns]
+    cols += [c for c in out.columns if c not in cols]
+    out = out[cols]
+    return annotate_global_btx_intensity_otsu(out)
+
+
 def ensure_roundness_column(df):
     if df is None or len(df) == 0:
         return df
@@ -78,8 +195,8 @@ def nmj_vs_orphan_intensity_mannwhitney_title(df, *, label_base="5. Global Recep
     if not required <= set(df.columns):
         return f"{label_base} (Missing Columns)", None
 
-    nmj = df[df["BTX signal class"] == "NMJ"]["MEAN_INTENSITY"].dropna()
-    orphan = df[df["BTX signal class"] == "Orphaned"]["MEAN_INTENSITY"].dropna()
+    nmj = df[df["BTX signal class"] == BTX_CLASS_EARLY_NMJ]["MEAN_INTENSITY"].dropna()
+    orphan = df[df["BTX signal class"] == BTX_CLASS_ORPHANED]["MEAN_INTENSITY"].dropna()
     if len(nmj) < 3 or len(orphan) < 3:
         return f"{label_base} (Insufficient Clusters)", None
 
@@ -93,7 +210,7 @@ def nmj_vs_orphan_intensity_mannwhitney_title(df, *, label_base="5. Global Recep
     med_orphan = float(orphan.median())
     title = (
         f"{label_base} (Mann-Whitney P = {p_val:.4g} {sig} | "
-        f"NMJ: {med_nmj:.2f} vs Orphaned: {med_orphan:.2f})"
+        f"{BTX_CLASS_EARLY_NMJ}: {med_nmj:.2f} vs {BTX_CLASS_ORPHANED}: {med_orphan:.2f})"
     )
     summary = {
         "p_val": float(p_val),
@@ -104,7 +221,7 @@ def nmj_vs_orphan_intensity_mannwhitney_title(df, *, label_base="5. Global Recep
     return title, summary
 
 
-def roundness_3way_kruskal_title(df, label_base="3. Global NMJ Roundness Analysis"):
+def roundness_3way_kruskal_title(df, label_base="3. Global early NMJ-like Roundness Analysis"):
     from scipy.stats import kruskal
 
     if df is None or len(df) == 0:
@@ -115,9 +232,9 @@ def roundness_3way_kruskal_title(df, label_base="3. Global NMJ Roundness Analysi
 
     df_valid = dataframe_for_roundness_kde_and_kruskal(df)
 
-    g_nmj = df_valid[df_valid["BTX signal class"] == "NMJ"]["ROUNDNESS"]
-    g_aneural = df_valid[df_valid["BTX signal class"] == "Aneural AChR clusters"]["ROUNDNESS"]
-    g_neuron = df_valid[df_valid["BTX signal class"] == "Neuron-associated BTX signal"]["ROUNDNESS"]
+    g_nmj = df_valid[df_valid["BTX signal class"] == BTX_CLASS_EARLY_NMJ]["ROUNDNESS"]
+    g_aneural = df_valid[df_valid["BTX signal class"] == BTX_CLASS_MUSCLE]["ROUNDNESS"]
+    g_neuron = df_valid[df_valid["BTX signal class"] == BTX_CLASS_NEURON]["ROUNDNESS"]
 
     if any(len(g) < 3 for g in [g_nmj, g_aneural, g_neuron]):
         return f"{label_base} (Insufficient group sizes for 3-way test)"
@@ -130,16 +247,16 @@ def roundness_3way_kruskal_title(df, label_base="3. Global NMJ Roundness Analysi
     sig = "***" if p_val < 0.001 else "**" if p_val < 0.01 else "*" if p_val < 0.05 else "ns"
     return (
         f"{label_base} (Kruskal P = {p_val:.4g} {sig})\n"
-        f"Medians - NMJ: {g_nmj.median():.2f} | Aneural: {g_aneural.median():.2f} | "
-        f"Neuron-Assoc: {g_neuron.median():.2f}"
+        f"Medians - {BTX_CLASS_EARLY_NMJ}: {g_nmj.median():.2f} | {BTX_CLASS_MUSCLE}: {g_aneural.median():.2f} | "
+        f"{BTX_CLASS_NEURON}: {g_neuron.median():.2f}"
     )
 
 
 BTX_SIGNAL_CLASS_HISTOGRAM_LABELS = {
-    "NMJ": "NMJ",
-    "Aneural AChR clusters": "Muscle-only",
-    "Neuron-associated BTX signal": "Neuron-only",
-    "Orphaned": "Orphaned",
+    BTX_CLASS_EARLY_NMJ: BTX_CLASS_EARLY_NMJ,
+    BTX_CLASS_MUSCLE: BTX_CLASS_MUSCLE,
+    BTX_CLASS_NEURON: BTX_CLASS_NEURON,
+    BTX_CLASS_ORPHANED: BTX_CLASS_ORPHANED,
 }
 
 
@@ -197,7 +314,727 @@ def _draw_otsu_vline(ax, otsu_th, *, show_label=False, ymax_frac=0.95):
     )
 
 
-def add_global_btx_intensity_histogram_with_otsu_row(fig, outer, row_idx, master_df, *, panel_num):
+def _sig_stars(p):
+    if p is None or not np.isfinite(p):
+        return "n/a"
+    return "***" if p < 0.001 else "**" if p < 0.01 else "*" if p < 0.05 else "ns"
+
+
+BTX_CLASS_TO_ABUNDANCE_COL = {
+    BTX_CLASS_EARLY_NMJ: ABUNDANCE_COL_EARLY_NMJ,
+    BTX_CLASS_MUSCLE: ABUNDANCE_COL_MUSCLE,
+    BTX_CLASS_NEURON: ABUNDANCE_COL_NEURON,
+    BTX_CLASS_ORPHANED: ABUNDANCE_COL_ORPHANED,
+}
+
+ZONE_ABUNDANCE_AREA_COLS = (
+    AREA_COL_EARLY_NMJ,
+    AREA_COL_MUSCLE,
+    AREA_COL_NEURON,
+    AREA_COL_ORPHANED,
+)
+ZONE_ABUNDANCE_COUNT_COLS = (
+    BTX_CLASS_EARLY_NMJ,
+    BTX_CLASS_MUSCLE,
+    BTX_CLASS_NEURON,
+    BTX_CLASS_ORPHANED,
+)
+ZONE_ABUNDANCE_VALUE_COLS = (
+    ABUNDANCE_COL_EARLY_NMJ,
+    ABUNDANCE_COL_MUSCLE,
+    ABUNDANCE_COL_NEURON,
+    ABUNDANCE_COL_ORPHANED,
+)
+
+
+def _append_zone_abundance_columns(stats_df_spec):
+    """Add per-image zone abundance (spots / 1000 µm² total mask area) columns."""
+    if stats_df_spec is None or len(stats_df_spec) == 0:
+        return pd.DataFrame()
+    df = normalize_file_stats_columns(stats_df_spec.copy())
+    if not set(ZONE_ABUNDANCE_AREA_COLS) <= set(df.columns):
+        return df
+    if not set(ZONE_ABUNDANCE_COUNT_COLS) <= set(df.columns):
+        return df
+    total_area = (
+        df[AREA_COL_EARLY_NMJ]
+        + df[AREA_COL_MUSCLE]
+        + df[AREA_COL_NEURON]
+        + df[AREA_COL_ORPHANED]
+    )
+    total_area = np.where(total_area <= 0, 1.0, total_area)
+    df[ABUNDANCE_COL_EARLY_NMJ] = df[BTX_CLASS_EARLY_NMJ] / total_area * 1000
+    df[ABUNDANCE_COL_MUSCLE] = df[BTX_CLASS_MUSCLE] / total_area * 1000
+    df[ABUNDANCE_COL_NEURON] = df[BTX_CLASS_NEURON] / total_area * 1000
+    df[ABUNDANCE_COL_ORPHANED] = df[BTX_CLASS_ORPHANED] / total_area * 1000
+    return df
+
+
+def build_otsu_thresholded_abundance_stats(master_df, all_file_stats, otsu_th):
+    """Per-image zone abundance using only spots with ``MEAN_INTENSITY >=`` global Otsu."""
+    base = normalize_file_stats_columns(pd.DataFrame(all_file_stats or []))
+    if base.empty or not np.isfinite(otsu_th):
+        return pd.DataFrame()
+    if not {"File", *ZONE_ABUNDANCE_AREA_COLS} <= set(base.columns):
+        return pd.DataFrame()
+    if master_df is None or len(master_df) == 0:
+        return pd.DataFrame()
+    if "MEAN_INTENSITY" not in master_df.columns or "SOURCE_IMAGE" not in master_df.columns:
+        return pd.DataFrame()
+    if "BTX signal class" not in master_df.columns:
+        return pd.DataFrame()
+
+    filtered = master_df[master_df["MEAN_INTENSITY"] >= float(otsu_th)]
+    if len(filtered) == 0:
+        return pd.DataFrame()
+
+    counts = (
+        filtered.groupby(["SOURCE_IMAGE", "BTX signal class"]).size().unstack(fill_value=0)
+    )
+    out = base[["File"]].copy()
+    total_area = (
+        base[AREA_COL_EARLY_NMJ]
+        + base[AREA_COL_MUSCLE]
+        + base[AREA_COL_NEURON]
+        + base[AREA_COL_ORPHANED]
+    )
+    total_area = np.where(total_area <= 0, 1.0, total_area)
+
+    for btx_class, ab_col in BTX_CLASS_TO_ABUNDANCE_COL.items():
+        if btx_class in counts.columns:
+            class_counts = base["File"].map(counts[btx_class]).fillna(0)
+        else:
+            class_counts = pd.Series(0.0, index=base.index)
+        out[ab_col] = class_counts / total_area * 1000
+
+    return out
+
+
+def draw_zone_btx_abundance_panel(ax, stats_df_spec, *, title_base, include_nmj_zone=True):
+    """Box/strip plot of zone abundance; returns ``(title, p_friedman, conover_df)``."""
+    from scipy.stats import friedmanchisquare
+
+    ax.clear()
+    p_friedman_abundance = None
+    conover_abundance_results = None
+
+    if stats_df_spec is None or len(stats_df_spec) < 1:
+        ax.text(0.5, 0.5, "Insufficient images\nfor abundance test", ha="center", va="center")
+        ax.set_axis_off()
+        return title_base, None, None
+
+    stats_df_spec = _append_zone_abundance_columns(stats_df_spec)
+    if include_nmj_zone and ABUNDANCE_COL_EARLY_NMJ in stats_df_spec.columns:
+        abundance_vars = list(ZONE_ABUNDANCE_VALUE_COLS)
+        palette_ab = ["red", "green", "blue", "gray"]
+    else:
+        abundance_vars = [ABUNDANCE_COL_MUSCLE, ABUNDANCE_COL_NEURON, ABUNDANCE_COL_ORPHANED]
+        palette_ab = ["green", "blue", "gray"]
+
+    melt_abundance = stats_df_spec.melt(
+        id_vars=["File"],
+        value_vars=abundance_vars,
+        var_name="Zone",
+        value_name="Abundance",
+    )
+    melt_abundance["Zone"] = melt_abundance["Zone"].str.replace("Abundance_", "", regex=False)
+
+    sns.boxplot(
+        data=melt_abundance,
+        x="Zone",
+        y="Abundance",
+        hue="Zone",
+        palette=palette_ab,
+        legend=False,
+        ax=ax,
+        showfliers=False,
+    )
+    sns.stripplot(
+        data=melt_abundance,
+        x="Zone",
+        y="Abundance",
+        color="black",
+        alpha=0.4,
+        jitter=True,
+        ax=ax,
+    )
+
+    abundance_title_str = title_base
+    if len(stats_df_spec) >= 2:
+        try:
+            if include_nmj_zone and ABUNDANCE_COL_EARLY_NMJ in stats_df_spec.columns:
+                _stat_friedman_ab, p_friedman_abundance = friedmanchisquare(
+                    stats_df_spec[ABUNDANCE_COL_EARLY_NMJ],
+                    stats_df_spec[ABUNDANCE_COL_MUSCLE],
+                    stats_df_spec[ABUNDANCE_COL_NEURON],
+                    stats_df_spec[ABUNDANCE_COL_ORPHANED],
+                )
+            else:
+                _stat_friedman_ab, p_friedman_abundance = friedmanchisquare(
+                    stats_df_spec[ABUNDANCE_COL_MUSCLE],
+                    stats_df_spec[ABUNDANCE_COL_NEURON],
+                    stats_df_spec[ABUNDANCE_COL_ORPHANED],
+                )
+            sig_star_ab = _sig_stars(p_friedman_abundance)
+            abundance_title_str = f"{title_base}\n(Friedman P = {p_friedman_abundance:.4g} {sig_star_ab})"
+            try:
+                conover_abundance_results, _ = posthoc_conover_iman(stats_df_spec, abundance_vars)
+                if conover_abundance_results is not None:
+                    nmj_comps_ab = []
+                    for _, row in conover_abundance_results.iterrows():
+                        g1, g2 = row["group1"], row["group2"]
+                        early_nmj_key = ABUNDANCE_COL_EARLY_NMJ.replace("Abundance_", "")
+                        if early_nmj_key in (g1, g2):
+                            other = g2 if g1 == early_nmj_key else g1
+                            short_other = (
+                                "Mus" if "Mus" in other
+                                else "Neu" if "Neu" in other
+                                else "Orp" if "Orp" in other
+                                else other
+                            )
+                            nmj_comps_ab.append(f"{BTX_CLASS_EARLY_NMJ}-{short_other}:{row['sig']}")
+                    if nmj_comps_ab:
+                        abundance_title_str += "\nConover: " + ", ".join(nmj_comps_ab)
+            except Exception:
+                pass
+        except ValueError:
+            abundance_title_str = f"{title_base}\n(Insufficient Variance)"
+            p_friedman_abundance = 1.0
+
+    ax.set_title(abundance_title_str)
+    ax.set_ylabel("Spots / 1000 μm²")
+    ax.set_xlabel("Target Tissue Zone")
+    return abundance_title_str, p_friedman_abundance, conover_abundance_results
+
+
+def draw_global_intensity_kde_panel(ax, master_df, *, title, otsu_th=None, otsu_filtered=False):
+    """KDE of spot ``MEAN_INTENSITY``; optionally keep only spots at/above global Otsu."""
+    ax.clear()
+    plot_df = master_df
+    if plot_df is None or len(plot_df) == 0:
+        ax.text(0.5, 0.5, "No intensity data", ha="center", va="center")
+        ax.set_title(title)
+        ax.set_axis_off()
+        return title, None
+
+    if otsu_filtered and np.isfinite(otsu_th):
+        plot_df = plot_df[plot_df["MEAN_INTENSITY"] >= float(otsu_th)]
+    if len(plot_df) == 0:
+        ax.text(0.5, 0.5, "No spots after Otsu filter", ha="center", va="center")
+        ax.set_title(title)
+        ax.set_axis_off()
+        return title, None
+
+    _int_vals = plot_df["MEAN_INTENSITY"].dropna()
+    _int_max = float(_int_vals.quantile(0.999)) if len(_int_vals) > 0 else None
+    sns.kdeplot(
+        data=plot_df,
+        x="MEAN_INTENSITY",
+        hue="BTX signal class",
+        hue_order=BTX_SIGNAL_CLASS_ORDER,
+        palette=BTX_SIGNAL_CLASS_PALETTE,
+        ax=ax,
+        common_norm=False,
+        fill=True,
+        warn_singular=False,
+        clip=(0, _int_max) if _int_max is not None else None,
+    )
+    if _int_max is not None:
+        ax.set_xlim(0, _int_max * 1.05)
+    if otsu_filtered and np.isfinite(otsu_th):
+        _draw_otsu_vline(ax, otsu_th)
+
+    intensity_summary = None
+    if otsu_filtered:
+        panel_title = title
+    else:
+        panel_title, intensity_summary = nmj_vs_orphan_intensity_mannwhitney_title(
+            plot_df,
+            label_base=title,
+        )
+    ax.set_title(panel_title)
+    ax.set_xlabel("Mean Fluorescence Intensity")
+    ax.set_ylabel("Probability Density")
+    return panel_title, intensity_summary
+
+
+def _roundness_kruskal_result(df):
+    from scipy.stats import kruskal
+
+    if df is None or len(df) == 0:
+        return None
+    df_valid = dataframe_for_roundness_kde_and_kruskal(df)
+    g_nmj = df_valid[df_valid["BTX signal class"] == BTX_CLASS_EARLY_NMJ]["ROUNDNESS"]
+    g_aneural = df_valid[df_valid["BTX signal class"] == BTX_CLASS_MUSCLE]["ROUNDNESS"]
+    g_neuron = df_valid[df_valid["BTX signal class"] == BTX_CLASS_NEURON]["ROUNDNESS"]
+    if any(len(g) < 3 for g in [g_nmj, g_aneural, g_neuron]):
+        return None
+    try:
+        h_stat, p_val = kruskal(g_nmj, g_aneural, g_neuron)
+    except ValueError:
+        return None
+    return {
+        "statistic_name": "H",
+        "statistic_value": float(h_stat),
+        "p_value": float(p_val),
+        "n_nmj": int(len(g_nmj)),
+        "n_aneural": int(len(g_aneural)),
+        "n_neuron": int(len(g_neuron)),
+    }
+
+
+def _intensity_mannwhitney_result(df):
+    from scipy.stats import mannwhitneyu
+
+    if df is None or len(df) == 0:
+        return None
+    nmj = df[df["BTX signal class"] == BTX_CLASS_EARLY_NMJ]["MEAN_INTENSITY"].dropna()
+    orphan = df[df["BTX signal class"] == BTX_CLASS_ORPHANED]["MEAN_INTENSITY"].dropna()
+    if len(nmj) < 3 or len(orphan) < 3:
+        return None
+    try:
+        u_stat, p_val = mannwhitneyu(nmj, orphan, alternative="greater")
+    except ValueError:
+        return None
+    return {
+        "statistic_name": "U",
+        "statistic_value": float(u_stat),
+        "p_value": float(p_val),
+        "n_nmj": int(len(nmj)),
+        "n_orphan": int(len(orphan)),
+        "nmj_median": float(nmj.median()),
+        "orphan_median": float(orphan.median()),
+    }
+
+
+STAT_SUMMARY_COLUMNS = (
+    "level",
+    "folder",
+    "file",
+    "metric",
+    "comparison",
+    "test",
+    "test_design",
+    "statistic",
+    "statistic_value",
+    "p_value",
+    "p_value_adjusted",
+    "significance",
+    "notes",
+)
+
+
+def build_batch_stat_summary_dataframe(
+    master_df,
+    *,
+    distance_threshold_um,
+    dash_meta,
+    run_all,
+):
+    """Primary image-level tests + exploratory spot-pooled tests.
+
+    Returns ``(stat_df, image_medians_df, otsu_dim_noise_df)``.
+    """
+    rows = []
+    image_medians_df = build_per_image_all_class_medians_table(master_df)
+
+    def add_row(**kwargs):
+        row = {col: kwargs.get(col) for col in STAT_SUMMARY_COLUMNS}
+        rows.append(row)
+
+    scope = "all_folders" if run_all else "current_folder"
+    otsu_th = dash_meta.get("global_btx_intensity_otsu") if dash_meta else None
+    otsu_label = f"{float(otsu_th):.1f} A.U." if otsu_th is not None and np.isfinite(otsu_th) else "n/a"
+    n_images = (
+        int(master_df[_image_group_columns(master_df)].drop_duplicates().shape[0])
+        if _image_group_columns(master_df) is not None
+        else 0
+    )
+
+    # --- Primary inference: per-image class medians (unit of replication = image) ---
+    img_prox = image_level_proximity_analysis_results(master_df)
+    if img_prox is not None:
+        for axis_key, axis_label in (("muscle_kruskal", "muscle mask"), ("neuron_kruskal", "neuron mask")):
+            kw = img_prox.get(axis_key)
+            if kw is None:
+                continue
+            med = kw["medians"]
+            add_row(
+                level="primary_image_level",
+                folder=scope,
+                file="",
+                metric=f"Proximity — distance to {axis_label} (per-image class median)",
+                comparison=BTX_CLASS_COMPARISON_4WAY,
+                test="Kruskal-Wallis",
+                test_design=(
+                    f"Image-level class medians; NMJ boundary ≤ {distance_threshold_um} μm; "
+                    f"n_images={n_images}"
+                ),
+                statistic=kw["statistic_name"],
+                statistic_value=kw["statistic_value"],
+                p_value=kw["p_value"],
+                p_value_adjusted="",
+                significance=_sig_stars(kw["p_value"]),
+                notes=(
+                    "Median of per-image medians (μm): "
+                    f"{BTX_CLASS_EARLY_NMJ}={med.get(BTX_CLASS_EARLY_NMJ, float('nan')):.3f}, "
+                    f"{BTX_CLASS_MUSCLE}={med.get(BTX_CLASS_MUSCLE, float('nan')):.3f}, "
+                    f"{BTX_CLASS_NEURON}={med.get(BTX_CLASS_NEURON, float('nan')):.3f}, "
+                    f"{BTX_CLASS_ORPHANED}={med.get(BTX_CLASS_ORPHANED, float('nan')):.3f}"
+                ),
+            )
+        for axis_label, posthoc_df in (
+            ("muscle mask", img_prox.get("posthoc_muscle")),
+            ("neuron mask", img_prox.get("posthoc_neuron")),
+        ):
+            if posthoc_df is None or len(posthoc_df) == 0:
+                continue
+            for _, row in posthoc_df.iterrows():
+                add_row(
+                    level="primary_posthoc",
+                    folder=scope,
+                    file="",
+                    metric=f"Proximity — distance to {axis_label} (per-image class median)",
+                    comparison=f"{row['group1']} vs {row['group2']}",
+                    test="Mann-Whitney U",
+                    test_design=f"pairwise {BTX_CLASS_EARLY_NMJ} vs other class on image medians; Holm–Bonferroni adjusted",
+                    statistic="U",
+                    statistic_value=row.get("u_stat"),
+                    p_value=row.get("p_val"),
+                    p_value_adjusted=row.get("p_val_adj"),
+                    significance=row.get("sig"),
+                    notes="Follow-up to image-level Kruskal–Wallis on proximity axis",
+                )
+
+    img_round = image_level_roundness_kruskal_result(master_df)
+    if img_round is not None:
+        add_row(
+            level="primary_image_level",
+            folder=scope,
+            file="",
+            metric="Spot roundness (per-image class median)",
+            comparison=BTX_CLASS_COMPARISON_3WAY,
+            test="Kruskal-Wallis",
+            test_design="Image-level medians; spots with AREA_PX ≥ MIN_PIXELS_FOR_SHAPE",
+            statistic=img_round["statistic_name"],
+            statistic_value=img_round["statistic_value"],
+            p_value=img_round["p_value"],
+            p_value_adjusted="",
+            significance=_sig_stars(img_round["p_value"]),
+            notes=f"n_images={img_round.get('n_images', n_images)}",
+        )
+
+    img_int_paired = image_level_intensity_paired_nmj_vs_orphan(master_df)
+    if img_int_paired is not None:
+        add_row(
+            level="primary_image_level",
+            folder=scope,
+            file="",
+            metric="BTX intensity (paired within image, class medians)",
+            comparison=BTX_CLASS_COMPARISON_INTENSITY,
+            test="Wilcoxon signed-rank",
+            test_design=(
+                "one-sided (greater): per-image early NMJ-like median vs Orphaned median "
+                "in images containing both classes"
+            ),
+            statistic=img_int_paired["statistic_name"],
+            statistic_value=img_int_paired["statistic_value"],
+            p_value=img_int_paired["p_value"],
+            p_value_adjusted="",
+            significance=_sig_stars(img_int_paired["p_value"]),
+            notes=(
+                f"n_paired_images={img_int_paired['n_paired_images']}; "
+                f"{BTX_CLASS_EARLY_NMJ} brighter in {img_int_paired['nmj_brighter_count']} images; "
+                f"medians of image medians {img_int_paired['nmj_median_of_medians']:.2f} vs "
+                f"{img_int_paired['orphan_median_of_medians']:.2f} A.U."
+            ),
+        )
+
+    img_int = image_level_intensity_nmj_vs_orphan(master_df)
+    if img_int is not None:
+        add_row(
+            level="primary_sensitivity",
+            folder=scope,
+            file="",
+            metric="BTX intensity (unpaired image medians, all spots)",
+            comparison=BTX_CLASS_COMPARISON_INTENSITY,
+            test="Mann-Whitney U",
+            test_design="sensitivity: unpaired one-sided (greater) on image-level medians",
+            statistic=img_int["statistic_name"],
+            statistic_value=img_int["statistic_value"],
+            p_value=img_int["p_value"],
+            p_value_adjusted="",
+            significance=_sig_stars(img_int["p_value"]),
+            notes=(
+                f"n_images {BTX_CLASS_EARLY_NMJ}={img_int['n_nmj_images']}, "
+                f"{BTX_CLASS_ORPHANED}={img_int['n_orphan_images']}; "
+                f"medians {img_int['nmj_median']:.2f} vs {img_int['orphan_median']:.2f} A.U.; "
+                "use paired Wilcoxon row for primary inference"
+            ),
+        )
+
+    otsu_dim_noise_df = build_otsu_dim_noise_rejection_table(master_df, otsu_th=otsu_th)
+    if otsu_th is not None and np.isfinite(otsu_th):
+        img_frac_paired = image_level_paired_frac_above_otsu_nmj_vs_orphan(master_df, otsu_th)
+        if img_frac_paired is not None:
+            add_row(
+                level="primary_image_level",
+                folder=scope,
+                file="",
+                metric=f"Fraction above Otsu {otsu_label} (paired within image)",
+                comparison=BTX_CLASS_COMPARISON_INTENSITY,
+                test="Wilcoxon signed-rank",
+                test_design=(
+                    "one-sided (greater): per-image fraction of early NMJ-like spots ≥ Otsu vs "
+                    "Orphaned fraction in images with both classes"
+                ),
+                statistic=img_frac_paired["statistic_name"],
+                statistic_value=img_frac_paired["statistic_value"],
+                p_value=img_frac_paired["p_value"],
+                p_value_adjusted="",
+                significance=_sig_stars(img_frac_paired["p_value"]),
+                notes=(
+                    f"n_paired_images={img_frac_paired['n_paired_images']}; "
+                    f"higher in {img_frac_paired['nmj_higher_frac_count']} images; "
+                    f"median fractions {img_frac_paired['nmj_median_frac']:.3f} vs "
+                    f"{img_frac_paired['orphan_median_frac']:.3f}"
+                ),
+            )
+
+        img_int_paired_otsu = image_level_intensity_paired_nmj_vs_orphan(master_df, otsu_th=otsu_th)
+        if img_int_paired_otsu is not None:
+            add_row(
+                level="primary_image_level",
+                folder=scope,
+                file="",
+                metric=f"BTX intensity (paired within image, spots ≥ Otsu {otsu_label})",
+                comparison=BTX_CLASS_COMPARISON_INTENSITY,
+                test="Wilcoxon signed-rank",
+                test_design="one-sided (greater) on paired image medians after Otsu spot filter",
+                statistic=img_int_paired_otsu["statistic_name"],
+                statistic_value=img_int_paired_otsu["statistic_value"],
+                p_value=img_int_paired_otsu["p_value"],
+                p_value_adjusted="",
+                significance=_sig_stars(img_int_paired_otsu["p_value"]),
+                notes=(
+                    f"n_paired_images={img_int_paired_otsu['n_paired_images']}; "
+                    f"{BTX_CLASS_EARLY_NMJ} brighter in {img_int_paired_otsu['nmj_brighter_count']} images"
+                ),
+            )
+
+        img_int_otsu = image_level_intensity_nmj_vs_orphan(master_df, otsu_th=otsu_th)
+        if img_int_otsu is not None:
+            add_row(
+                level="primary_sensitivity",
+                folder=scope,
+                file="",
+                metric=f"BTX intensity (unpaired image medians, spots ≥ Otsu {otsu_label})",
+                comparison=BTX_CLASS_COMPARISON_INTENSITY,
+                test="Mann-Whitney U",
+                test_design="sensitivity: unpaired one-sided (greater) after Otsu spot filter",
+                statistic=img_int_otsu["statistic_name"],
+                statistic_value=img_int_otsu["statistic_value"],
+                p_value=img_int_otsu["p_value"],
+                p_value_adjusted="",
+                significance=_sig_stars(img_int_otsu["p_value"]),
+                notes=(
+                    f"n_images {BTX_CLASS_EARLY_NMJ}={img_int_otsu['n_nmj_images']}, "
+                    f"{BTX_CLASS_ORPHANED}={img_int_otsu['n_orphan_images']}; "
+                    "use paired Wilcoxon row for primary inference"
+                ),
+            )
+
+    p_friedman_all = dash_meta.get("friedman_p_abundance") if dash_meta else None
+    if p_friedman_all is not None:
+        add_row(
+            level="primary_image_level",
+            folder=scope,
+            file="",
+            metric="Zone BTX spot abundance (all detected spots)",
+            comparison=BTX_CLASS_COMPARISON_4WAY_ZONES,
+            test="Friedman",
+            test_design="repeated measures per image; abundance = spots / 1000 μm² total mask area",
+            statistic="chi-square",
+            statistic_value="",
+            p_value=p_friedman_all,
+            p_value_adjusted="",
+            significance=_sig_stars(p_friedman_all),
+            notes="Per-image zone counts from EDT classification at NMJ boundary",
+        )
+
+    conover_all = dash_meta.get("conover_abundance_results") if dash_meta else None
+    if conover_all is not None and len(conover_all) > 0:
+        for _, row in conover_all.iterrows():
+            add_row(
+                level="primary_posthoc",
+                folder=scope,
+                file="",
+                metric="Zone BTX spot abundance (all detected spots)",
+                comparison=f"{row['group1']} vs {row['group2']}",
+                test="Conover-Iman",
+                test_design="pairwise post-hoc after Friedman; Holm–Bonferroni adjusted",
+                statistic="t",
+                statistic_value=row.get("t_stat"),
+                p_value=row.get("p_val"),
+                p_value_adjusted=row.get("p_val_adj"),
+                significance=row.get("sig"),
+                notes="Follow-up to per-image Friedman abundance test",
+            )
+
+    p_friedman_otsu = dash_meta.get("friedman_p_abundance_otsu") if dash_meta else None
+    if p_friedman_otsu is not None:
+        add_row(
+            level="primary_image_level",
+            folder=scope,
+            file="",
+            metric=f"Zone BTX spot abundance (spots ≥ global Otsu {otsu_label})",
+            comparison=BTX_CLASS_COMPARISON_4WAY_ZONES,
+            test="Friedman",
+            test_design="repeated measures per image; Otsu-filtered counts / 1000 μm²",
+            statistic="chi-square",
+            statistic_value="",
+            p_value=p_friedman_otsu,
+            p_value_adjusted="",
+            significance=_sig_stars(p_friedman_otsu),
+            notes=f"Only spots with MEAN_INTENSITY ≥ {otsu_label}",
+        )
+
+    conover_otsu = dash_meta.get("conover_abundance_otsu_results") if dash_meta else None
+    if conover_otsu is not None and len(conover_otsu) > 0:
+        for _, row in conover_otsu.iterrows():
+            add_row(
+                level="primary_posthoc",
+                folder=scope,
+                file="",
+                metric=f"Zone BTX spot abundance (spots ≥ global Otsu {otsu_label})",
+                comparison=f"{row['group1']} vs {row['group2']}",
+                test="Conover-Iman",
+                test_design="pairwise post-hoc after Friedman; Holm–Bonferroni adjusted",
+                statistic="t",
+                statistic_value=row.get("t_stat"),
+                p_value=row.get("p_val"),
+                p_value_adjusted=row.get("p_val_adj"),
+                significance=row.get("sig"),
+                notes="Follow-up to Otsu-filtered Friedman abundance test",
+            )
+
+    # --- Exploratory: all spots pooled (visualization support; not primary inference) ---
+    proximity = proximity_analysis_results(master_df)
+    if proximity is not None:
+        muscle_kw = proximity.get("muscle_kruskal")
+        if muscle_kw is not None:
+            med = muscle_kw["medians"]
+            add_row(
+                level="exploratory_spot_pooled",
+                folder=scope,
+                file="",
+                metric="Proximity — distance to muscle mask (spot edge)",
+                comparison=BTX_CLASS_COMPARISON_4WAY,
+                test="Kruskal-Wallis",
+                test_design="EXPLORATORY: all spots pooled (non-independent within image)",
+                statistic=muscle_kw["statistic_name"],
+                statistic_value=muscle_kw["statistic_value"],
+                p_value=muscle_kw["p_value"],
+                p_value_adjusted="",
+                significance=_sig_stars(muscle_kw["p_value"]),
+                notes=(
+                    "Spot-pooled medians (μm): "
+                    f"{BTX_CLASS_EARLY_NMJ}={med.get(BTX_CLASS_EARLY_NMJ, float('nan')):.3f}, "
+                    f"{BTX_CLASS_MUSCLE}={med.get(BTX_CLASS_MUSCLE, float('nan')):.3f}"
+                ),
+            )
+        neuron_kw = proximity.get("neuron_kruskal")
+        if neuron_kw is not None:
+            med = neuron_kw["medians"]
+            add_row(
+                level="exploratory_spot_pooled",
+                folder=scope,
+                file="",
+                metric="Proximity — distance to neuron mask (spot edge)",
+                comparison=BTX_CLASS_COMPARISON_4WAY,
+                test="Kruskal-Wallis",
+                test_design="EXPLORATORY: all spots pooled (non-independent within image)",
+                statistic=neuron_kw["statistic_name"],
+                statistic_value=neuron_kw["statistic_value"],
+                p_value=neuron_kw["p_value"],
+                p_value_adjusted="",
+                significance=_sig_stars(neuron_kw["p_value"]),
+                notes="For plot visualization only; use primary_image_level rows for inference",
+            )
+
+    roundness = _roundness_kruskal_result(master_df)
+    if roundness is not None:
+        add_row(
+            level="exploratory_spot_pooled",
+            folder=scope,
+            file="",
+            metric="Spot roundness (1 − eccentricity)",
+            comparison=BTX_CLASS_COMPARISON_3WAY,
+            test="Kruskal-Wallis",
+            test_design="EXPLORATORY: all spots pooled",
+            statistic=roundness["statistic_name"],
+            statistic_value=roundness["statistic_value"],
+            p_value=roundness["p_value"],
+            p_value_adjusted="",
+            significance=_sig_stars(roundness["p_value"]),
+            notes=(
+                f"n_spots {BTX_CLASS_EARLY_NMJ}={roundness['n_nmj']}, {BTX_CLASS_MUSCLE}={roundness['n_aneural']}, "
+                f"{BTX_CLASS_NEURON}={roundness['n_neuron']}"
+            ),
+        )
+
+    intensity = _intensity_mannwhitney_result(master_df)
+    if intensity is not None:
+        add_row(
+            level="exploratory_spot_pooled",
+            folder=scope,
+            file="",
+            metric="BTX mean spot intensity (all detected spots)",
+            comparison=BTX_CLASS_COMPARISON_INTENSITY,
+            test="Mann-Whitney U",
+            test_design="EXPLORATORY: all spots pooled; one-sided (greater)",
+            statistic=intensity["statistic_name"],
+            statistic_value=intensity["statistic_value"],
+            p_value=intensity["p_value"],
+            p_value_adjusted="",
+            significance=_sig_stars(intensity["p_value"]),
+            notes=(
+                f"n_spots {BTX_CLASS_EARLY_NMJ}={intensity['n_nmj']}, {BTX_CLASS_ORPHANED}={intensity['n_orphan']}; "
+                f"medians {intensity['nmj_median']:.2f} vs {intensity['orphan_median']:.2f} A.U."
+            ),
+        )
+
+    if otsu_th is not None and np.isfinite(otsu_th):
+        filtered = master_df[master_df["MEAN_INTENSITY"] >= float(otsu_th)]
+        intensity_otsu = _intensity_mannwhitney_result(filtered)
+        if intensity_otsu is not None:
+            add_row(
+                level="exploratory_spot_pooled",
+                folder=scope,
+                file="",
+                metric=f"BTX mean spot intensity (spots ≥ global Otsu {otsu_label})",
+                comparison=BTX_CLASS_COMPARISON_INTENSITY,
+                test="Mann-Whitney U",
+                test_design="EXPLORATORY: all spots pooled after Otsu filter",
+                statistic=intensity_otsu["statistic_name"],
+                statistic_value=intensity_otsu["statistic_value"],
+                p_value=intensity_otsu["p_value"],
+                p_value_adjusted="",
+                significance=_sig_stars(intensity_otsu["p_value"]),
+                notes="For plot visualization only",
+            )
+
+    if not rows:
+        stat_df = pd.DataFrame(columns=list(STAT_SUMMARY_COLUMNS))
+    else:
+        stat_df = pd.DataFrame(rows, columns=list(STAT_SUMMARY_COLUMNS))
+    for col in ("statistic_value", "p_value", "p_value_adjusted"):
+        if col in stat_df.columns:
+            stat_df[col] = pd.to_numeric(stat_df[col], errors="coerce")
+    return stat_df, image_medians_df, otsu_dim_noise_df
+
+
+def add_global_btx_intensity_histogram_with_otsu_row(fig, outer, row_idx, master_df, *, panel_num=None):
     """Full-width histogram row: combined KDE + per-class histograms with shared Otsu line."""
     axes_out = []
     gs_hist = outer[row_idx, :].subgridspec(2, 4, height_ratios=[1.15, 1.0], hspace=0.42, wspace=0.28)
@@ -211,7 +1048,7 @@ def add_global_btx_intensity_histogram_with_otsu_row(fig, outer, row_idx, master
         ax_combined.set_axis_off()
         for ax in class_axes:
             ax.set_axis_off()
-        ax_combined.set_title(f"{panel_num}. Global BTX Intensity Histograms (No Data)")
+        ax_combined.set_title("Global BTX Intensity Histograms (No Data)")
         return axes_out, np.nan
 
     intensities = master_df["MEAN_INTENSITY"].dropna().to_numpy(dtype=np.float64)
@@ -233,8 +1070,9 @@ def add_global_btx_intensity_histogram_with_otsu_row(fig, outer, row_idx, master
     )
     _draw_otsu_vline(ax_combined, otsu_th, show_label=True)
     otsu_label = f"{otsu_th:.1f} A.U." if np.isfinite(otsu_th) else "n/a"
+    title_prefix = f"{panel_num}. " if panel_num is not None else ""
     ax_combined.set_title(
-        f"{panel_num}. Global BTX Intensity Histograms by Class (Global Otsu = {otsu_label})"
+        f"{title_prefix}Global BTX Intensity Histograms by Class (Global Otsu = {otsu_label})"
     )
     ax_combined.set_xlabel("Mean Fluorescence Intensity (A.U.)")
     ax_combined.set_ylabel("Probability Density")
@@ -348,48 +1186,441 @@ def _scatter_dataframe_with_clip_jitter(df, sigma_um=0.02, seed=42):
     return out
 
 
-def _mannwhitney_neuron_distance_nmij_vs_aneural(df, min_per_group=3):
+def _proximity_kruskal_result(df, distance_col, *, min_per_group=3):
+    """Kruskal–Wallis across BTX signal classes for one proximity axis."""
+    from scipy.stats import kruskal
+
+    if df is None or len(df) == 0 or distance_col not in df.columns:
+        return None
+    if "BTX signal class" not in df.columns:
+        return None
+
+    groups = []
+    n_by_class = {}
+    medians = {}
+    for cls in BTX_SIGNAL_CLASS_ORDER:
+        vals = df[df["BTX signal class"] == cls][distance_col].dropna()
+        n_by_class[cls] = int(len(vals))
+        medians[cls] = float(vals.median()) if len(vals) else np.nan
+        if len(vals) >= min_per_group:
+            groups.append(vals)
+
+    if len(groups) < 2:
+        return None
+    try:
+        h_stat, p_val = kruskal(*groups)
+    except ValueError:
+        return None
+    return {
+        "statistic_name": "H",
+        "statistic_value": float(h_stat),
+        "p_value": float(p_val),
+        "n_by_class": n_by_class,
+        "medians": medians,
+    }
+
+
+def _proximity_pairwise_vs_nmj_posthoc(df, distance_col, *, min_per_group=3):
+    """Pairwise Mann–Whitney (early NMJ-like vs each other class) with Holm–Bonferroni adjustment."""
+    long_df = df[["BTX signal class", distance_col]].rename(columns={distance_col: "value"})
+    return _pairwise_nmj_mannwhitney_posthoc(long_df, "value", min_per_group=min_per_group)
+
+
+def _image_group_columns(df):
+    if df is None or "SOURCE_IMAGE" not in df.columns:
+        return None
+    cols = []
+    if "SOURCE_FOLDER" in df.columns:
+        cols.append("SOURCE_FOLDER")
+    cols.append("SOURCE_IMAGE")
+    return cols
+
+
+def build_per_image_class_medians(master_df, value_col, *, spot_filter_df=None):
+    """Per-image, per-class median (and spot count) for one numeric column."""
+    df = spot_filter_df if spot_filter_df is not None else master_df
+    gcols = _image_group_columns(df)
+    if gcols is None or value_col not in df.columns:
+        return pd.DataFrame()
+    work = df[gcols + ["BTX signal class", value_col]].dropna(subset=[value_col])
+    if len(work) == 0:
+        return pd.DataFrame()
+    out = (
+        work.groupby(gcols + ["BTX signal class"], observed=True)[value_col]
+        .agg(median_value="median", n_spots="size")
+        .reset_index()
+    )
+    out["metric"] = value_col
+    return out
+
+
+def build_per_image_all_class_medians_table(master_df):
+    """Long table of class-specific medians per image for key proximity/morphology metrics."""
+    if master_df is None or len(master_df) == 0:
+        return pd.DataFrame()
+    parts = []
+    for col in ("Dist_to_Muscle_um", "Dist_to_Neuron_um", "MEAN_INTENSITY"):
+        part = build_per_image_class_medians(master_df, col)
+        if len(part):
+            parts.append(part)
+    shape_df = dataframe_for_roundness_kde_and_kruskal(master_df)
+    if len(shape_df):
+        part = build_per_image_class_medians(master_df, "ROUNDNESS", spot_filter_df=shape_df)
+        if len(part):
+            parts.append(part)
+    if not parts:
+        return pd.DataFrame()
+    return pd.concat(parts, ignore_index=True)
+
+
+def _kruskal_on_class_values(df, value_col, class_col="BTX signal class", *, min_per_group=3, class_order=None):
+    """Kruskal–Wallis on one value column split by class (works for spots or image-level medians)."""
+    from scipy.stats import kruskal
+
+    if df is None or len(df) == 0 or value_col not in df.columns:
+        return None
+    class_order = class_order or BTX_SIGNAL_CLASS_ORDER
+    groups = []
+    n_by_class = {}
+    medians = {}
+    for cls in class_order:
+        vals = df[df[class_col] == cls][value_col].dropna()
+        n_by_class[cls] = int(len(vals))
+        medians[cls] = float(vals.median()) if len(vals) else np.nan
+        if len(vals) >= min_per_group:
+            groups.append(vals)
+    if len(groups) < 2:
+        return None
+    try:
+        h_stat, p_val = kruskal(*groups)
+    except ValueError:
+        return None
+    return {
+        "statistic_name": "H",
+        "statistic_value": float(h_stat),
+        "p_value": float(p_val),
+        "n_by_class": n_by_class,
+        "medians": medians,
+    }
+
+
+def _pairwise_nmj_mannwhitney_posthoc(df, value_col, *, class_col="BTX signal class", min_per_group=3):
+    """Pairwise Mann–Whitney (early NMJ-like vs each other class) with Holm adjustment."""
     from scipy.stats import mannwhitneyu
 
     if df is None or len(df) == 0:
         return None
-    if "BTX signal class" not in df.columns or "Dist_to_Neuron_um" not in df.columns:
+    nmj = df[df[class_col] == BTX_CLASS_EARLY_NMJ][value_col].dropna()
+    if len(nmj) < min_per_group:
         return None
-    dist_nmj = df[df["BTX signal class"] == "NMJ"]["Dist_to_Neuron_um"].dropna()
-    dist_aneural = df[df["BTX signal class"] == "Aneural AChR clusters"]["Dist_to_Neuron_um"].dropna()
-    if len(dist_nmj) < min_per_group or len(dist_aneural) < min_per_group:
+    rows = []
+    for other_cls in BTX_SIGNAL_CLASS_ORDER:
+        if other_cls == BTX_CLASS_EARLY_NMJ:
+            continue
+        other = df[df[class_col] == other_cls][value_col].dropna()
+        if len(other) < min_per_group:
+            continue
+        try:
+            u_stat, p_val = mannwhitneyu(nmj, other, alternative="two-sided")
+        except ValueError:
+            continue
+        rows.append(
+            {
+                "group1": BTX_CLASS_EARLY_NMJ,
+                "group2": other_cls,
+                "u_stat": float(u_stat),
+                "p_val": float(p_val),
+            }
+        )
+    if not rows:
         return None
-    try:
-        _, p_val = mannwhitneyu(dist_nmj, dist_aneural, alternative="less")
-    except ValueError:
+    df_out = pd.DataFrame(rows)
+    pvals = df_out["p_val"].to_numpy()
+    m = len(pvals)
+    sorted_indices = np.argsort(pvals)
+    adj_p = np.zeros(m)
+    running = 0.0
+    for rank, orig_idx in enumerate(sorted_indices):
+        adj = pvals[orig_idx] * (m - rank)
+        running = max(running, min(1.0, adj))
+        adj_p[orig_idx] = running
+    df_out["p_val_adj"] = adj_p
+    df_out["sig"] = df_out["p_val_adj"].apply(_sig_stars)
+    return df_out
+
+
+def image_level_proximity_analysis_results(master_df, *, min_images_per_class=3):
+    """Proximity inference on per-image class medians (one value per image per class)."""
+    if _image_group_columns(master_df) is None:
+        return None
+    muscle_med = build_per_image_class_medians(master_df, "Dist_to_Muscle_um")
+    neuron_med = build_per_image_class_medians(master_df, "Dist_to_Neuron_um")
+    if len(muscle_med) == 0 and len(neuron_med) == 0:
         return None
     return {
-        "p_val": float(p_val),
-        "med_nmj": float(dist_nmj.median()),
-        "med_aneural": float(dist_aneural.median()),
+        "muscle_kruskal": _kruskal_on_class_values(
+            muscle_med, "median_value", min_per_group=min_images_per_class
+        ),
+        "neuron_kruskal": _kruskal_on_class_values(
+            neuron_med, "median_value", min_per_group=min_images_per_class
+        ),
+        "posthoc_muscle": _pairwise_nmj_mannwhitney_posthoc(
+            muscle_med, "median_value", min_per_group=min_images_per_class
+        ),
+        "posthoc_neuron": _pairwise_nmj_mannwhitney_posthoc(
+            neuron_med, "median_value", min_per_group=min_images_per_class
+        ),
+        "n_images": int(master_df[_image_group_columns(master_df)].drop_duplicates().shape[0]),
     }
 
 
-def get_spatial_docking_title(df, label_base="1. Synaptic Docking Precision", n_spots=None, min_per_group=3):
-    head = label_base if n_spots is None else f"{label_base} (n={n_spots})"
-    if df is None or len(df) == 0:
-        return f"{head}\n(No Data)"
-    res = _mannwhitney_neuron_distance_nmij_vs_aneural(df, min_per_group=min_per_group)
-    if res is None:
-        return (
-            f"{head}\n(Insufficient clusters for Mann-Whitney; need ≥{min_per_group} NMJ and ≥{min_per_group} Aneural)"
+def image_level_roundness_kruskal_result(master_df, *, min_images_per_class=3):
+    shape_df = dataframe_for_roundness_kde_and_kruskal(master_df)
+    if len(shape_df) == 0:
+        return None
+    med = build_per_image_class_medians(master_df, "ROUNDNESS", spot_filter_df=shape_df)
+    med = med[med["BTX signal class"].isin(ROUNDNESS_KRUSKAL_CLASSES)]
+    if len(med) == 0:
+        return None
+    result = _kruskal_on_class_values(
+        med,
+        "median_value",
+        min_per_group=min_images_per_class,
+        class_order=list(ROUNDNESS_KRUSKAL_CLASSES),
+    )
+    if result is None:
+        return None
+    result["n_images"] = int(shape_df[_image_group_columns(shape_df)].drop_duplicates().shape[0])
+    return result
+
+
+def _paired_image_class_series(med_df, class_a, class_b, value_col="median_value"):
+    """Align per-image values for two BTX classes; returns (series_a, series_b) on shared index."""
+    gcols = _image_group_columns(med_df)
+    if gcols is None or value_col not in med_df.columns:
+        return None, None
+    a = (
+        med_df[med_df["BTX signal class"] == class_a]
+        .set_index(gcols)[value_col]
+        .dropna()
+    )
+    b = (
+        med_df[med_df["BTX signal class"] == class_b]
+        .set_index(gcols)[value_col]
+        .dropna()
+    )
+    shared = a.index.intersection(b.index)
+    if len(shared) == 0:
+        return None, None
+    return a.loc[shared], b.loc[shared]
+
+
+def image_level_intensity_paired_nmj_vs_orphan(master_df, *, otsu_th=None, min_pairs=3):
+    """Paired Wilcoxon: within each image, early NMJ-like median intensity vs Orphaned median."""
+    df = master_df
+    if otsu_th is not None and np.isfinite(otsu_th):
+        df = df[df["MEAN_INTENSITY"] >= float(otsu_th)]
+    med = build_per_image_class_medians(df, "MEAN_INTENSITY")
+    if len(med) == 0:
+        return None
+    nmj_vals, orphan_vals = _paired_image_class_series(
+        med, BTX_CLASS_EARLY_NMJ, BTX_CLASS_ORPHANED
+    )
+    if nmj_vals is None or len(nmj_vals) < min_pairs:
+        return None
+    from scipy.stats import wilcoxon
+
+    try:
+        w_stat, p_val = wilcoxon(nmj_vals, orphan_vals, alternative="greater")
+    except ValueError:
+        return None
+    return {
+        "statistic_name": "W",
+        "statistic_value": float(w_stat),
+        "p_value": float(p_val),
+        "n_paired_images": int(len(nmj_vals)),
+        "nmj_median_of_medians": float(nmj_vals.median()),
+        "orphan_median_of_medians": float(orphan_vals.median()),
+        "nmj_brighter_count": int((nmj_vals > orphan_vals).sum()),
+    }
+
+
+def image_level_intensity_nmj_vs_orphan(master_df, *, otsu_th=None, min_images_per_class=3):
+    """Unpaired Mann–Whitney on per-image class medians (sensitivity analysis)."""
+    df = master_df
+    if otsu_th is not None and np.isfinite(otsu_th):
+        df = df[df["MEAN_INTENSITY"] >= float(otsu_th)]
+    med = build_per_image_class_medians(df, "MEAN_INTENSITY")
+    if len(med) == 0:
+        return None
+    from scipy.stats import mannwhitneyu
+
+    nmj = med[med["BTX signal class"] == BTX_CLASS_EARLY_NMJ]["median_value"].dropna()
+    orphan = med[med["BTX signal class"] == BTX_CLASS_ORPHANED]["median_value"].dropna()
+    if len(nmj) < min_images_per_class or len(orphan) < min_images_per_class:
+        return None
+    try:
+        u_stat, p_val = mannwhitneyu(nmj, orphan, alternative="greater")
+    except ValueError:
+        return None
+    return {
+        "statistic_name": "U",
+        "statistic_value": float(u_stat),
+        "p_value": float(p_val),
+        "n_nmj_images": int(len(nmj)),
+        "n_orphan_images": int(len(orphan)),
+        "nmj_median": float(nmj.median()),
+        "orphan_median": float(orphan.median()),
+    }
+
+
+OTS_DIM_NOISE_REJECTION_COLUMNS = (
+    "btx_signal_class",
+    "n_spots",
+    "n_spots_above_otsu",
+    "pct_spots_above_otsu",
+    "global_otsu_threshold_au",
+    "interpretation",
+)
+
+
+def build_otsu_dim_noise_rejection_table(master_df, otsu_th=None):
+    """Spot-level composition table: fraction of each class above global intensity Otsu."""
+    master_df = normalize_btx_signal_classes(master_df)
+    if master_df is None or len(master_df) == 0 or "MEAN_INTENSITY" not in master_df.columns:
+        return pd.DataFrame(columns=list(OTS_DIM_NOISE_REJECTION_COLUMNS))
+    if otsu_th is None or not np.isfinite(otsu_th):
+        otsu_th = global_btx_intensity_otsu_threshold(master_df["MEAN_INTENSITY"])
+    if not np.isfinite(otsu_th):
+        return pd.DataFrame(columns=list(OTS_DIM_NOISE_REJECTION_COLUMNS))
+
+    interpretations = {
+        BTX_CLASS_EARLY_NMJ: (
+            "Synaptic puncta near muscle and neuron; most pass Otsu — consistent with specific AChR staining."
+        ),
+        BTX_CLASS_MUSCLE: (
+            "Muscle-proximal AChR clusters; high Otsu pass rate supports muscle-associated true signal amid dirty stain."
+        ),
+        BTX_CLASS_NEURON: (
+            "Neuron-proximal BTX; high Otsu pass rate — may include presynaptic or developing terminals."
+        ),
+        BTX_CLASS_ORPHANED: (
+            "Distant from both masks; low Otsu pass rate — mostly dim non-specific/background-like puncta "
+            "(may include brighter immature or mislocalized signal)."
+        ),
+    }
+    rows = []
+    for cls in BTX_SIGNAL_CLASS_ORDER:
+        sub = master_df[master_df["BTX signal class"] == cls]
+        n = int(len(sub))
+        n_above = int((sub["MEAN_INTENSITY"] >= float(otsu_th)).sum()) if n else 0
+        pct = round(100.0 * n_above / n, 1) if n else np.nan
+        rows.append(
+            {
+                "btx_signal_class": cls,
+                "n_spots": n,
+                "n_spots_above_otsu": n_above,
+                "pct_spots_above_otsu": pct,
+                "global_otsu_threshold_au": float(otsu_th),
+                "interpretation": interpretations.get(cls, ""),
+            }
         )
-    p_val = res["p_val"]
-    sig = "***" if p_val < 0.001 else "**" if p_val < 0.01 else "*" if p_val < 0.05 else "ns"
+    return pd.DataFrame(rows, columns=list(OTS_DIM_NOISE_REJECTION_COLUMNS))
+
+
+def build_per_image_class_fraction_above_otsu(master_df, otsu_th):
+    """Per-image fraction of spots in each class with MEAN_INTENSITY >= global Otsu."""
+    master_df = normalize_btx_signal_classes(master_df)
+    gcols = _image_group_columns(master_df)
+    if gcols is None or not np.isfinite(otsu_th):
+        return pd.DataFrame()
+    work = master_df[gcols + ["BTX signal class", "MEAN_INTENSITY"]].copy()
+    work["above_otsu"] = work["MEAN_INTENSITY"] >= float(otsu_th)
     return (
-        f"{head}\n(Mann-Whitney P = {p_val:.4g} {sig} | "
-        f"NMJ: {res['med_nmj']:.2f} μm vs Aneural: {res['med_aneural']:.2f} μm)"
+        work.groupby(gcols + ["BTX signal class"], observed=True)["above_otsu"]
+        .mean()
+        .reset_index(name="frac_above_otsu")
     )
 
 
-def spatial_docking_mannwhitneyu_p(df, min_per_group=3):
-    res = _mannwhitney_neuron_distance_nmij_vs_aneural(df, min_per_group=min_per_group)
-    return float(res["p_val"]) if res is not None else float("nan")
+def image_level_paired_frac_above_otsu_nmj_vs_orphan(master_df, otsu_th, *, min_pairs=3):
+    """Paired Wilcoxon: within image, fraction of early NMJ-like spots above Otsu vs Orphaned."""
+    frac = build_per_image_class_fraction_above_otsu(master_df, otsu_th)
+    if len(frac) == 0:
+        return None
+    nmj_vals, orphan_vals = _paired_image_class_series(
+        frac, BTX_CLASS_EARLY_NMJ, BTX_CLASS_ORPHANED, value_col="frac_above_otsu"
+    )
+    if nmj_vals is None or len(nmj_vals) < min_pairs:
+        return None
+    from scipy.stats import wilcoxon
+
+    try:
+        w_stat, p_val = wilcoxon(nmj_vals, orphan_vals, alternative="greater")
+    except ValueError:
+        return None
+    return {
+        "statistic_name": "W",
+        "statistic_value": float(w_stat),
+        "p_value": float(p_val),
+        "n_paired_images": int(len(nmj_vals)),
+        "nmj_median_frac": float(nmj_vals.median()),
+        "orphan_median_frac": float(orphan_vals.median()),
+        "nmj_higher_frac_count": int((nmj_vals > orphan_vals).sum()),
+    }
+
+
+def proximity_analysis_results(df, *, min_per_group=3):
+    """Global proximity statistics for muscle and neuron edge-distance axes."""
+    if df is None or len(df) == 0:
+        return None
+    return {
+        "muscle_kruskal": _proximity_kruskal_result(df, "Dist_to_Muscle_um", min_per_group=min_per_group),
+        "neuron_kruskal": _proximity_kruskal_result(df, "Dist_to_Neuron_um", min_per_group=min_per_group),
+        "posthoc_muscle": _proximity_pairwise_vs_nmj_posthoc(df, "Dist_to_Muscle_um", min_per_group=min_per_group),
+        "posthoc_neuron": _proximity_pairwise_vs_nmj_posthoc(df, "Dist_to_Neuron_um", min_per_group=min_per_group),
+    }
+
+
+def get_proximity_analysis_title(
+    df,
+    label_base="Proximity Analysis",
+    n_spots=None,
+    min_per_group=3,
+    *,
+    primary_image_level=True,
+):
+    """Title for proximity scatter; uses image-level Kruskal when batch master data includes images."""
+    head = label_base if n_spots is None else f"{label_base} (n={n_spots} spots)"
+    if df is None or len(df) == 0:
+        return f"{head}\n(No Data)"
+
+    use_image_level = primary_image_level and _image_group_columns(df) is not None
+    if use_image_level:
+        res = image_level_proximity_analysis_results(df, min_images_per_class=min_per_group)
+        if res is not None and res.get("n_images"):
+            head = f"{label_base} ({res['n_images']} images; image-level inference)"
+    else:
+        res = proximity_analysis_results(df, min_per_group=min_per_group)
+
+    if res is None:
+        return head
+
+    lines = [head]
+    muscle = res.get("muscle_kruskal")
+    neuron = res.get("neuron_kruskal")
+    if muscle is not None:
+        lines.append(
+            f"Dist to muscle — Kruskal P = {muscle['p_value']:.4g} {_sig_stars(muscle['p_value'])}"
+        )
+    if neuron is not None:
+        lines.append(
+            f"Dist to neuron — Kruskal P = {neuron['p_value']:.4g} {_sig_stars(neuron['p_value'])}"
+        )
+    if muscle is None and neuron is None:
+        need = "images" if use_image_level else "spots"
+        lines.append(f"(Need ≥{min_per_group} {need} per class for Kruskal–Wallis)")
+    return "\n".join(lines)
 
 
 def draw_proximity_joint(
@@ -472,7 +1703,7 @@ def draw_proximity_joint(
     ax_main.axvline(x=distance_threshold_um, color="black", linestyle="--")
     ax_main.axhline(y=distance_threshold_um, color="black", linestyle="--")
     n_spots = int(len(df)) if df is not None else 0
-    full_title = get_spatial_docking_title(df, label_base=title, n_spots=n_spots)
+    full_title = get_proximity_analysis_title(df, label_base=title, n_spots=n_spots)
     if title_ax is not None:
         title_ax.clear()
         title_ax.axis("off")
@@ -594,9 +1825,9 @@ def save_all_folders_summary_png(
     )
 
     sns.barplot(data=folder_stats, x="SOURCE_FOLDER", y="nmj_rate_pct", ax=ax_nmj_rate, color="#d62728")
-    ax_nmj_rate.set_title("1. NMJ Formation Rate by Folder")
+    ax_nmj_rate.set_title(f"1. {BTX_CLASS_EARLY_NMJ} Formation Rate by Folder")
     ax_nmj_rate.set_xlabel("Folder")
-    ax_nmj_rate.set_ylabel("NMJ Rate (%)")
+    ax_nmj_rate.set_ylabel(f"{BTX_CLASS_EARLY_NMJ} Rate (%)")
     ax_nmj_rate.tick_params(axis="x", rotation=45)
 
     sns.barplot(data=folder_stats, x="SOURCE_FOLDER", y="total_spots", ax=ax_total_spots, color="#1f77b4")
@@ -748,40 +1979,36 @@ def posthoc_conover_iman(stats_df_spec, value_vars, block_col="File"):
 
 
 def build_aggregate_batch_dashboard_figure(master_df, distance_threshold_um, *, run_all, all_file_stats):
-    """Batch end-card figure: same layout as ``BTX_batch`` post-batch dashboard.
+    """Batch summary figure: histogram, original panels, and Otsu-thresholded counterparts.
 
-    ``all_file_stats`` is a list of dicts with keys ``File``, zone area/count columns, etc.
-    (as produced during a live batch). If empty, the abundance panel shows a placeholder.
-
-    Returns ``(fig, panel_specs, meta)`` where ``meta`` contains optional Streamlit messaging fields.
+    Returns ``(fig, panel_specs, meta)`` where ``meta`` contains test results and messaging fields.
     """
-    from scipy.stats import friedmanchisquare
-
     master_df = normalize_btx_signal_classes(master_df)
+    stats_df_spec = normalize_file_stats_columns(pd.DataFrame(all_file_stats or []))
 
-    if run_all:
-        fig = plt.figure(figsize=(24, 40), constrained_layout=True)
-        fig.set_constrained_layout_pads(w_pad=0.02, h_pad=0.02, hspace=0.01, wspace=0.01)
-    else:
-        fig = plt.figure(figsize=(20, 38), constrained_layout=True)
-    outer = fig.add_gridspec(5, 2, height_ratios=[1.0, 1.0, 1.0, 1.0, 1.35])
+    n_rows = 6 if run_all else 5
+    fig_h = 48 if run_all else 42
+    fig_w = 24 if run_all else 20
+    fig = plt.figure(figsize=(fig_w, fig_h), constrained_layout=True)
+    fig.set_constrained_layout_pads(w_pad=0.02, h_pad=0.02, hspace=0.01, wspace=0.01)
+    height_ratios = [1.35] + [1.0] * (n_rows - 2) + [0.95]
+    outer = fig.add_gridspec(n_rows, 2, height_ratios=height_ratios)
+
+    hist_axes, global_otsu_th = add_global_btx_intensity_histogram_with_otsu_row(
+        fig, outer, 0, master_df
+    )
 
     ax_scatter, ax_prox_kde_x, ax_prox_kde_y, ax_prox_title = proximity_joint_axes(
-        fig, outer[0, 0], title_first=True, large_main_panel=True
+        fig, outer[1, 0], title_first=True, large_main_panel=True
     )
-    ax_size_kde = fig.add_subplot(outer[0, 1])
-    ax_circ_kde = fig.add_subplot(outer[1, 0])
-    ax_overlap_kde = fig.add_subplot(outer[1, 1])
-    ax_intensity_kde = fig.add_subplot(outer[2, 0])
-    ax_control = None
-    if run_all and "SOURCE_FOLDER" in master_df.columns and "SOURCE_IMAGE" in master_df.columns:
-        ax_control = fig.add_subplot(outer[2, 1])
-    if run_all:
-        ax_abundance = fig.add_subplot(outer[3, 0])
-    else:
-        ax_abundance = fig.add_subplot(outer[2, 1])
-
-    stats_df_spec = pd.DataFrame(all_file_stats or [])
+    ax_size_kde = fig.add_subplot(outer[1, 1])
+    ax_circ_kde = fig.add_subplot(outer[2, 0])
+    ax_overlap_kde = fig.add_subplot(outer[2, 1])
+    ax_intensity_kde = fig.add_subplot(outer[3, 0])
+    ax_intensity_otsu_kde = fig.add_subplot(outer[3, 1])
+    ax_abundance = fig.add_subplot(outer[4, 0])
+    ax_abundance_otsu = fig.add_subplot(outer[4, 1])
+    ax_control = fig.add_subplot(outer[5, :]) if run_all else None
 
     draw_proximity_joint(
         ax_scatter,
@@ -789,7 +2016,7 @@ def build_aggregate_batch_dashboard_figure(master_df, distance_threshold_um, *, 
         ax_prox_kde_y,
         master_df,
         distance_threshold_um,
-        "Global NMJ Proximity Analysis",
+        "Global BTX Proximity Analysis",
         marginal_combined_black=True,
         title_ax=ax_prox_title,
     )
@@ -806,7 +2033,7 @@ def build_aggregate_batch_dashboard_figure(master_df, distance_threshold_um, *, 
             fill=True,
             warn_singular=False,
         )
-    ax_size_kde.set_title("Global NMJ Size KDE")
+    ax_size_kde.set_title("Global BTX Size KDE (all spots)")
     ax_size_kde.set_xlabel("Radius (μm)")
     ax_size_kde.set_ylabel("Probability Density")
 
@@ -827,150 +2054,71 @@ def build_aggregate_batch_dashboard_figure(master_df, distance_threshold_um, *, 
         )
     roundness_title_global = roundness_3way_kruskal_title(
         master_df,
-        label_base="Global NMJ Roundness KDE (1 − eccentricity)",
+        label_base="Global early NMJ-like Roundness KDE (1 − eccentricity)",
     )
     ax_circ_kde.set_title(roundness_title_global)
     ax_circ_kde.set_xlabel("Roundness (1 = circle)")
     ax_circ_kde.set_ylabel("Probability Density")
     ax_circ_kde.set_xlim(0, 1)
 
-    master_innervation = master_df[master_df["BTX signal class"] == "NMJ"] if len(master_df) > 0 else master_df
+    master_innervation = (
+        master_df[master_df["BTX signal class"] == BTX_CLASS_EARLY_NMJ]
+        if len(master_df) > 0
+        else master_df
+    )
     if len(master_innervation) > 0:
         sns.histplot(
             data=master_innervation,
             x="INNERVATION_OVERLAP_PCT",
-            color=BTX_SIGNAL_CLASS_PALETTE["NMJ"],
+            color=BTX_SIGNAL_CLASS_PALETTE[BTX_CLASS_EARLY_NMJ],
             ax=ax_overlap_kde,
         )
-    ax_overlap_kde.set_title("Global NMJ Innervation Distribution")
-    ax_overlap_kde.set_xlabel("NMJ Innervation (%)")
+    ax_overlap_kde.set_title(f"Global {BTX_CLASS_EARLY_NMJ} Innervation Distribution (all spots)")
+    ax_overlap_kde.set_xlabel(f"{BTX_CLASS_EARLY_NMJ} Innervation (%)")
     ax_overlap_kde.set_ylabel("Count")
 
-    if len(master_df) > 0:
-        _int_vals = (
-            master_df["MEAN_INTENSITY"].dropna()
-            if "MEAN_INTENSITY" in master_df.columns
-            else pd.Series(dtype=float)
-        )
-        _int_max = float(_int_vals.quantile(0.999)) if len(_int_vals) > 0 else None
-        sns.kdeplot(
-            data=master_df,
-            x="MEAN_INTENSITY",
-            hue="BTX signal class",
-            hue_order=BTX_SIGNAL_CLASS_ORDER,
-            palette=BTX_SIGNAL_CLASS_PALETTE,
-            ax=ax_intensity_kde,
-            common_norm=False,
-            fill=True,
-            warn_singular=False,
-            clip=(0, _int_max) if _int_max is not None else None,
-        )
-        if _int_max is not None:
-            ax_intensity_kde.set_xlim(0, _int_max * 1.05)
-    intensity_title, intensity_summary = nmj_vs_orphan_intensity_mannwhitney_title(
+    _, intensity_summary = draw_global_intensity_kde_panel(
+        ax_intensity_kde,
         master_df,
-        label_base="Global Receptor Intensity",
+        title="Global Receptor Intensity (all spots)",
+        otsu_th=global_otsu_th,
+        otsu_filtered=False,
     )
-    ax_intensity_kde.set_title(intensity_title)
-    ax_intensity_kde.set_xlabel("Mean Fluorescence Intensity")
-    ax_intensity_kde.set_ylabel("Probability Density")
+    otsu_int_title = (
+        f"Global Receptor Intensity (spots ≥ Otsu {global_otsu_th:.1f} A.U.)"
+        if np.isfinite(global_otsu_th)
+        else "Global Receptor Intensity (Otsu-filtered)"
+    )
+    draw_global_intensity_kde_panel(
+        ax_intensity_otsu_kde,
+        master_df,
+        title=otsu_int_title,
+        otsu_th=global_otsu_th,
+        otsu_filtered=True,
+    )
 
-    ax_abundance.clear()
-    p_friedman_abundance = None
-    conover_abundance_results = None
-    if len(stats_df_spec) >= 1 and {"Area_NMJ_um2", "Area_Muscle_um2", "Area_Neuron_um2", "Area_Orphan_um2",
-                                    "NMJs (Both)", "Near Aneural AChR clusters",
-                                    "Near Neuron-associated BTX signal", "Orphaned"}.issubset(stats_df_spec.columns):
-        total_area = (
-            stats_df_spec["Area_NMJ_um2"] + 
-            stats_df_spec["Area_Muscle_um2"] + 
-            stats_df_spec["Area_Neuron_um2"] + 
-            stats_df_spec["Area_Orphan_um2"]
-        )
-        total_area = np.where(total_area <= 0, 1.0, total_area)
-        
-        stats_df_spec["Abundance_NMJ"] = stats_df_spec["NMJs (Both)"] / total_area * 1000
-        stats_df_spec["Abundance_Muscle"] = stats_df_spec["Near Aneural AChR clusters"] / total_area * 1000
-        stats_df_spec["Abundance_Neuron"] = stats_df_spec["Near Neuron-associated BTX signal"] / total_area * 1000
-        stats_df_spec["Abundance_Orphan"] = stats_df_spec["Orphaned"] / total_area * 1000
-        
-        has_nmj = "Density_NMJ" in stats_df_spec.columns
-        if has_nmj:
-            abundance_vars = ["Abundance_NMJ", "Abundance_Muscle", "Abundance_Neuron", "Abundance_Orphan"]
-            palette_ab = ["red", "green", "blue", "gray"]
-        else:
-            abundance_vars = ["Abundance_Muscle", "Abundance_Neuron", "Abundance_Orphan"]
-            palette_ab = ["red", "blue", "gray"]
-            
-        melt_abundance = stats_df_spec.melt(
-            id_vars=["File"],
-            value_vars=abundance_vars,
-            var_name="Zone",
-            value_name="Abundance",
-        )
-        melt_abundance["Zone"] = melt_abundance["Zone"].str.replace("Abundance_", "", regex=False)
-        
-        sns.boxplot(
-            data=melt_abundance,
-            x="Zone",
-            y="Abundance",
-            hue="Zone",
-            palette=palette_ab,
-            legend=False,
-            ax=ax_abundance,
-            showfliers=False,
-        )
-        sns.stripplot(
-            data=melt_abundance, x="Zone", y="Abundance", color="black", alpha=0.4, jitter=True, ax=ax_abundance
-        )
-        
-        abundance_title_str = "Global BTX Abundance (Spots / 1000 μm² total area)"
-        if len(stats_df_spec) >= 2:
-            try:
-                if has_nmj:
-                    _stat_friedman_ab, p_friedman_abundance = friedmanchisquare(
-                        stats_df_spec["Abundance_NMJ"],
-                        stats_df_spec["Abundance_Muscle"],
-                        stats_df_spec["Abundance_Neuron"],
-                        stats_df_spec["Abundance_Orphan"],
-                    )
-                else:
-                    _stat_friedman_ab, p_friedman_abundance = friedmanchisquare(
-                        stats_df_spec["Abundance_Muscle"],
-                        stats_df_spec["Abundance_Neuron"],
-                        stats_df_spec["Abundance_Orphan"],
-                    )
-                sig_star_ab = (
-                    "***" if p_friedman_abundance < 0.001 else "**" if p_friedman_abundance < 0.01 else "*" if p_friedman_abundance < 0.05 else "ns"
-                )
-                abundance_title_str = f"Global BTX Abundance (Friedman P = {p_friedman_abundance:.4g} {sig_star_ab})"
-                
-                try:
-                    conover_abundance_results, _ = posthoc_conover_iman(stats_df_spec, abundance_vars)
-                    if conover_abundance_results is not None:
-                        nmj_comps_ab = []
-                        for _, row in conover_abundance_results.iterrows():
-                            g1, g2 = row["group1"], row["group2"]
-                            if "NMJ" in (g1, g2):
-                                other = g2 if g1 == "NMJ" else g1
-                                short_other = "Mus" if "Mus" in other else "Neu" if "Neu" in other else "Orp" if "Orp" in other else other
-                                nmj_comps_ab.append(f"NMJ-{short_other}:{row['sig']}")
-                        if nmj_comps_ab:
-                            abundance_title_str += f"\nConover: " + ", ".join(nmj_comps_ab)
-                except Exception:
-                    pass
-            except ValueError:
-                abundance_title_str = "Global BTX Abundance (Insufficient Variance)"
-                p_friedman_abundance = 1.0
-                
-        ax_abundance.set_title(abundance_title_str)
-        ax_abundance.set_ylabel("Spots / 1000 μm²")
-        ax_abundance.set_xlabel("Target Tissue Zone")
-    else:
-        ax_abundance.text(0.5, 0.5, "Insufficient images\nfor abundance test", ha="center", va="center")
-        ax_abundance.set_axis_off()
+    _, p_friedman_abundance, conover_abundance_results = draw_zone_btx_abundance_panel(
+        ax_abundance,
+        stats_df_spec,
+        title_base="Global BTX Abundance — all detected spots",
+        include_nmj_zone=True,
+    )
 
-    if ax_control is not None:
+    otsu_abundance_stats = build_otsu_thresholded_abundance_stats(
+        master_df, all_file_stats, global_otsu_th
+    )
+    _, p_friedman_abundance_otsu, conover_abundance_otsu_results = draw_zone_btx_abundance_panel(
+        ax_abundance_otsu,
+        otsu_abundance_stats,
+        title_base=(
+            f"Global BTX Abundance — spots ≥ Otsu {global_otsu_th:.1f} A.U."
+            if np.isfinite(global_otsu_th)
+            else "Global BTX Abundance — Otsu-filtered"
+        ),
+        include_nmj_zone=True,
+    )
+
+    if ax_control is not None and "SOURCE_FOLDER" in master_df.columns and "SOURCE_IMAGE" in master_df.columns:
         per_image = (
             master_df.groupby(["SOURCE_FOLDER", "SOURCE_IMAGE"])
             .agg(total_spots=("is_NMJ", "size"), nmj_spots=("is_NMJ", "sum"))
@@ -1003,36 +2151,31 @@ def build_aggregate_batch_dashboard_figure(master_df, distance_threshold_um, *, 
             linewidth=1.5,
             ax=ax_control,
         )
-        ax_control.set_title("Per-Image NMJ Rate Control Chart")
+        ax_control.set_title(f"Per-Image {BTX_CLASS_EARLY_NMJ} Rate Control Chart")
         ax_control.set_xlabel("Folder")
-        ax_control.set_ylabel("NMJ Rate (%)")
+        ax_control.set_ylabel(f"{BTX_CLASS_EARLY_NMJ} Rate (%)")
         ax_control.tick_params(axis="x", rotation=45)
 
-    hist_panel_num = 8 if (run_all and ax_control is not None) else 7
-    hist_axes, global_otsu_th = add_global_btx_intensity_histogram_with_otsu_row(
-        fig,
-        outer,
-        4,
-        master_df,
-        panel_num=hist_panel_num,
-    )
-
     panel_specs = [
-        ("panel01_global_proximity", [ax_prox_title, ax_prox_kde_x, ax_scatter, ax_prox_kde_y]),
-        ("panel02_global_size_kde", [ax_size_kde]),
-        ("panel03_global_roundness_kde", [ax_circ_kde]),
-        ("panel04_global_innervation", [ax_overlap_kde]),
-        ("panel05_global_intensity", [ax_intensity_kde]),
-        ("panel06_btx_abundance", [ax_abundance]),
+        ("panel01_global_intensity_histogram_otsu", hist_axes),
+        ("panel02_global_proximity", [ax_prox_title, ax_prox_kde_x, ax_scatter, ax_prox_kde_y]),
+        ("panel03_global_size_kde", [ax_size_kde]),
+        ("panel04_global_roundness_kde", [ax_circ_kde]),
+        ("panel05_global_innervation", [ax_overlap_kde]),
+        ("panel06_global_intensity_all", [ax_intensity_kde]),
+        ("panel07_global_intensity_otsu", [ax_intensity_otsu_kde]),
+        ("panel08_btx_abundance_all", [ax_abundance]),
+        ("panel09_btx_abundance_otsu", [ax_abundance_otsu]),
     ]
     if run_all and ax_control is not None:
-        panel_specs.append(("panel07_per_image_nmj_control", [ax_control]))
-    panel_specs.append(("panel08_global_intensity_histogram_otsu", hist_axes))
+        panel_specs.append(("panel10_per_image_nmj_control", [ax_control]))
 
     meta = {
         "intensity_summary": intensity_summary,
         "friedman_p_abundance": float(p_friedman_abundance) if p_friedman_abundance is not None else None,
         "conover_abundance_results": conover_abundance_results,
+        "friedman_p_abundance_otsu": float(p_friedman_abundance_otsu) if p_friedman_abundance_otsu is not None else None,
+        "conover_abundance_otsu_results": conover_abundance_otsu_results,
         "global_btx_intensity_otsu": float(global_otsu_th) if np.isfinite(global_otsu_th) else None,
     }
     return fig, panel_specs, meta

@@ -12,24 +12,37 @@ from scipy.ndimage import distance_transform_edt, zoom
 from skimage.exposure import rescale_intensity
 
 from nmj_master_dashboard import (
+    BTX_CLASS_EARLY_NMJ,
+    BTX_CLASS_MUSCLE,
+    BTX_CLASS_NEURON,
+    BTX_CLASS_ORPHANED,
     BTX_SIGNAL_CLASS_ORDER,
     BTX_SIGNAL_CLASS_PALETTE,
     BTX_SIGNAL_CLASS_LEGACY_ALIASES,
+    DENSITY_COL_EARLY_NMJ,
+    DENSITY_COL_MUSCLE,
+    DENSITY_COL_NEURON,
+    DENSITY_COL_ORPHANED,
+    AREA_COL_EARLY_NMJ,
+    AREA_COL_MUSCLE,
+    AREA_COL_NEURON,
+    AREA_COL_ORPHANED,
     MIN_PIXELS_FOR_SHAPE,
     RESOLUTION_CLASS_LOWRES_UM_PER_PIXEL,
     ROUNDNESS_KRUSKAL_CLASSES,
     dataframe_for_roundness_kde_and_kruskal,
     normalize_btx_signal_classes,
-    ensure_roundness_column,
+    prepare_spot_table_for_master,
+    finalize_master_results_dataframe,
     annotate_global_btx_intensity_otsu,
     nmj_vs_orphan_intensity_mannwhitney_title,
     roundness_3way_kruskal_title,
     proximity_joint_axes,
-    spatial_docking_mannwhitneyu_p,
     draw_proximity_joint,
     save_all_folders_summary_png,
     _export_figure_panels_to_pdfs,
     build_aggregate_batch_dashboard_figure,
+    build_batch_stat_summary_dataframe,
     SUPPORTED_EXTENSIONS,
     collect_image_jobs,
     get_confocal_metadata,
@@ -754,13 +767,13 @@ if run_current or run_all:
 
             def classify_quadrant(row):
                 if row["Dist_to_Muscle_um"] <= distance_threshold_um and row["Dist_to_Neuron_um"] <= distance_threshold_um:
-                    return "NMJ"
+                    return BTX_CLASS_EARLY_NMJ
                 elif row["Dist_to_Muscle_um"] <= distance_threshold_um:
-                    return "Aneural AChR clusters"
+                    return BTX_CLASS_MUSCLE
                 elif row["Dist_to_Neuron_um"] <= distance_threshold_um:
-                    return "Neuron-associated BTX signal"
+                    return BTX_CLASS_NEURON
                 else:
-                    return "Orphaned"
+                    return BTX_CLASS_ORPHANED
 
             df_spots["BTX signal class"] = df_spots.apply(classify_quadrant, axis=1)
             df_spots = normalize_btx_signal_classes(df_spots)
@@ -796,8 +809,6 @@ if run_current or run_all:
                 ]
             )
 
-            docking_p = spatial_docking_mannwhitneyu_p(df_spots)
-
             # --- AREA-NORMALIZED DENSITY (NMJ vs muscle-only vs neuron-only vs orphan) ---
             mask_m_zone = edt_muscle_um <= distance_threshold_um
             mask_n_zone = edt_neuron_um <= distance_threshold_um
@@ -824,15 +835,12 @@ if run_current or run_all:
             df_spots.to_csv(out_csv, index=False)
 
             # Tag source file and stream to master CSV to avoid RAM blow-up on large all-folder runs
-            df_spots_master = df_spots.copy()
-            df_spots_master["SOURCE_IMAGE"] = czi_file
-            df_spots_master["SOURCE_FOLDER"] = os.path.basename(os.path.normpath(current_d))
-            cols = df_spots_master.columns.tolist()
-            cols.insert(0, cols.pop(cols.index("SOURCE_IMAGE")))
-            cols.insert(0, cols.pop(cols.index("SOURCE_FOLDER")))
-            if "TOTAL_IMAGE_AREA_um2" in cols:
-                cols.insert(2, cols.pop(cols.index("TOTAL_IMAGE_AREA_um2")))
-            df_spots_master = df_spots_master.reindex(columns=cols)
+            df_spots_master = prepare_spot_table_for_master(
+                df_spots,
+                source_folder=os.path.basename(os.path.normpath(current_d)),
+                source_image=czi_file,
+                total_image_area_um2=total_image_area_um2,
+            )
             df_spots_master.to_csv(master_csv, mode="a", header=(master_rows_written == 0), index=False)
             master_rows_written += len(df_spots_master)
 
@@ -840,21 +848,21 @@ if run_current or run_all:
                 {
                     "File": czi_file,
                     "Folder": os.path.basename(os.path.normpath(current_d)),
+                    "TOTAL_IMAGE_AREA_um2": float(total_image_area_um2),
                     "Total Spots": total_spots,
-                    "NMJs (Both)": nmj_count,
-                    "Near Aneural AChR clusters": near_m_only,
-                    "Near Neuron-associated BTX signal": near_n_only,
-                    "Orphaned": orphaned,
+                    BTX_CLASS_EARLY_NMJ: nmj_count,
+                    BTX_CLASS_MUSCLE: near_m_only,
+                    BTX_CLASS_NEURON: near_n_only,
+                    BTX_CLASS_ORPHANED: orphaned,
                     "Formation Rate (%)": formation_rate,
-                    "Docking Mann-Whitney P": docking_p,
-                    "Density_NMJ": dens_nmj,
-                    "Density_Muscle": dens_m,
-                    "Density_Neuron": dens_n,
-                    "Density_Orphan": dens_o,
-                    "Area_NMJ_um2": area_nmj_um2,
-                    "Area_Muscle_um2": area_m_um2,
-                    "Area_Neuron_um2": area_n_um2,
-                    "Area_Orphan_um2": area_o_um2,
+                    DENSITY_COL_EARLY_NMJ: dens_nmj,
+                    DENSITY_COL_MUSCLE: dens_m,
+                    DENSITY_COL_NEURON: dens_n,
+                    DENSITY_COL_ORPHANED: dens_o,
+                    AREA_COL_EARLY_NMJ: area_nmj_um2,
+                    AREA_COL_MUSCLE: area_m_um2,
+                    AREA_COL_NEURON: area_n_um2,
+                    AREA_COL_ORPHANED: area_o_um2,
                 }
             )
 
@@ -934,7 +942,7 @@ if run_current or run_all:
                 )
             roundness_title_img = roundness_3way_kruskal_title(
                 df_spots,
-                label_base="3. NMJ Roundness KDE (1 − eccentricity)",
+                label_base=f"3. {BTX_CLASS_EARLY_NMJ} Roundness KDE (1 − eccentricity)",
             )
             ax_circ_kde.set_title(roundness_title_img)
             ax_circ_kde.set_xlabel("Roundness (1 = circle)")
@@ -950,19 +958,23 @@ if run_current or run_all:
                     common_norm=False, fill=True,
                     warn_singular=False,
                 )
-            ax_size_kde.set_title('2. NMJ Size KDE')
+            ax_size_kde.set_title('2. BTX Size KDE')
             ax_size_kde.set_xlabel('Radius (μm)')
             ax_size_kde.set_ylabel('Probability Density')
             
             # Graph 8: NMJ Innervation Histogram (NMJ class only)
-            df_innervation_img = df_spots[df_spots["BTX signal class"] == "NMJ"] if len(df_spots) > 0 else df_spots
+            df_innervation_img = (
+                df_spots[df_spots["BTX signal class"] == BTX_CLASS_EARLY_NMJ]
+                if len(df_spots) > 0
+                else df_spots
+            )
             if len(df_innervation_img) > 0:
                 sns.histplot(
                     data=df_innervation_img, x='INNERVATION_OVERLAP_PCT',
-                    color=BTX_SIGNAL_CLASS_PALETTE["NMJ"], ax=ax_overlap_kde,
+                    color=BTX_SIGNAL_CLASS_PALETTE[BTX_CLASS_EARLY_NMJ], ax=ax_overlap_kde,
                 )
-            ax_overlap_kde.set_title('4. NMJ Innervation Distribution')
-            ax_overlap_kde.set_xlabel('NMJ Innervation (%)')
+            ax_overlap_kde.set_title(f'4. {BTX_CLASS_EARLY_NMJ} Innervation Distribution')
+            ax_overlap_kde.set_xlabel(f'{BTX_CLASS_EARLY_NMJ} Innervation (%)')
             ax_overlap_kde.set_ylabel('Count')
             
             # Graph 9: Mean Intensity KDE
@@ -993,7 +1005,7 @@ if run_current or run_all:
                 ax_prox_kde_y,
                 df_spots,
                 distance_threshold_um,
-                "1. NMJ Proximity Analysis",
+                "1. BTX Proximity Analysis",
                 marginal_combined_black=True,
                 title_ax=ax_prox_title,
             )
@@ -1025,10 +1037,10 @@ if run_current or run_all:
             
             # Graph 6: Composite Image + NMJ Arrows
             ax_comp_arrows.imshow(composite_rgb, aspect="auto")
-            ax_comp_arrows.set_title("10. Composite + Functional NMJs Only")
+            ax_comp_arrows.set_title(f"10. Composite + {BTX_CLASS_EARLY_NMJ} Only")
             ax_comp_arrows.axis('off')
             dens_data = pd.DataFrame({
-                "Zone": ["NMJ", "Muscle", "Neuron", "Orphan"],
+                "Zone": [BTX_CLASS_EARLY_NMJ, BTX_CLASS_MUSCLE, BTX_CLASS_NEURON, BTX_CLASS_ORPHANED],
                 "Density": [dens_nmj, dens_m, dens_n, dens_o],
             })
             sns.barplot(
@@ -1133,10 +1145,10 @@ if run_current or run_all:
     status.write("✅ **Batch Processing Complete!**")
     
     if master_rows_written > 0:
-        master_df = ensure_roundness_column(
-            normalize_btx_signal_classes(pd.read_csv(master_csv))
+        master_df = finalize_master_results_dataframe(
+            pd.read_csv(master_csv),
+            file_stats=all_file_stats,
         )
-        master_df = annotate_global_btx_intensity_otsu(master_df)
         master_df.to_csv(master_csv, index=False)
         st.success(f"Aggregate Master dataset uniquely saved: `{master_csv}`")
         
@@ -1182,34 +1194,85 @@ if run_current or run_all:
             all_file_stats=all_file_stats,
         )
 
-        intensity_summary = dash_meta.get("intensity_summary")
-        if intensity_summary is not None:
-            fold_change = float(intensity_summary["fold_change"])
-            if np.isfinite(fold_change):
-                st.write(
-                    f"**Intensity Enrichment:** NMJs are {fold_change:.2f}x brighter than orphaned "
-                    "background signals."
-                )
+        stat_summary_df, image_medians_df, otsu_dim_noise_df = build_batch_stat_summary_dataframe(
+            master_df,
+            distance_threshold_um=distance_threshold_um,
+            dash_meta=dash_meta,
+            run_all=run_all,
+        )
+        if run_all:
+            stat_summary_csv = os.path.join(run_dir, f"ALL_FOLDERS_STAT_SUMMARY{_thr_tag}.csv")
+            image_medians_csv = os.path.join(run_dir, f"ALL_FOLDERS_IMAGE_LEVEL_MEDIANS{_thr_tag}.csv")
+            otsu_rejection_csv = os.path.join(run_dir, f"ALL_FOLDERS_OTSU_DIM_NOISE_REJECTION{_thr_tag}.csv")
+        else:
+            stat_summary_csv = os.path.join(run_dir, f"BATCH_STAT_SUMMARY{_thr_tag}.csv")
+            image_medians_csv = os.path.join(run_dir, f"BATCH_IMAGE_LEVEL_MEDIANS{_thr_tag}.csv")
+            otsu_rejection_csv = os.path.join(run_dir, f"BATCH_OTSU_DIM_NOISE_REJECTION{_thr_tag}.csv")
+        stat_summary_df.to_csv(stat_summary_csv, index=False)
+        if len(image_medians_df) > 0:
+            image_medians_df.to_csv(image_medians_csv, index=False)
+            st.success(f"Per-image class medians saved: `{image_medians_csv}`")
+        if len(otsu_dim_noise_df) > 0:
+            otsu_dim_noise_df.to_csv(otsu_rejection_csv, index=False)
+            st.success(f"Otsu dim-noise rejection table saved: `{otsu_rejection_csv}`")
+        st.success(f"Statistical test summary saved: `{stat_summary_csv}`")
 
+        global_otsu = dash_meta.get("global_btx_intensity_otsu")
         p_friedman_ab = dash_meta.get("friedman_p_abundance")
+        p_friedman_ab_otsu = dash_meta.get("friedman_p_abundance_otsu")
         
-        if p_friedman_ab is not None:
-            st.markdown("### 🧪 Statistical Analysis of BTX Distribution")
-            st.markdown("#### Global BTX Abundance")
+        if p_friedman_ab is not None or p_friedman_ab_otsu is not None:
+            st.markdown("### 🧪 Statistical Analysis Summary")
             st.caption(
-                "Tests if the absolute number of spots (normalized by total image area) "
-                "differs between zones."
+                "Primary inference rows (`primary_image_level`, `primary_posthoc`) use per-image class "
+                "medians; `primary_sensitivity` rows are unpaired alternatives; exploratory rows "
+                "(`exploratory_spot_pooled`) pool all spots for visualization only."
             )
-            if p_friedman_ab < 0.05:
-                st.success(
-                    "Confirmed: Absolute abundance differs significantly across zones "
-                    f"(Friedman p={p_friedman_ab:.4e})."
+            st.dataframe(stat_summary_df)
+            if len(otsu_dim_noise_df) > 0:
+                st.markdown("#### Otsu dim-noise rejection (spot composition by class)")
+                st.caption(
+                    "Descriptive spot-pooled table: fraction of each class above the global intensity "
+                    "Otsu threshold. Supports — but does not replace — image-level paired Wilcoxon tests."
                 )
-            else:
-                st.warning(
-                    "Note: Absolute abundance differences across zones did not reach significance "
-                    f"(Friedman p={p_friedman_ab:.4g})."
+                st.dataframe(
+                    otsu_dim_noise_df[
+                        [
+                            "btx_signal_class",
+                            "n_spots",
+                            "n_spots_above_otsu",
+                            "pct_spots_above_otsu",
+                            "global_otsu_threshold_au",
+                        ]
+                    ]
                 )
+            otsu_note = (
+                f"{global_otsu:.1f} A.U." if global_otsu is not None and np.isfinite(global_otsu) else "n/a"
+            )
+            if p_friedman_ab is not None:
+                st.markdown("#### Global BTX Abundance (all detected spots)")
+                if p_friedman_ab < 0.05:
+                    st.success(
+                        "Zone abundance differs significantly across images "
+                        f"(Friedman p={p_friedman_ab:.4e})."
+                    )
+                else:
+                    st.warning(
+                        "Zone abundance differences did not reach significance "
+                        f"(Friedman p={p_friedman_ab:.4g})."
+                    )
+            if p_friedman_ab_otsu is not None:
+                st.markdown(f"#### Global BTX Abundance (spots ≥ Otsu {otsu_note})")
+                if p_friedman_ab_otsu < 0.05:
+                    st.success(
+                        "Otsu-filtered zone abundance differs significantly "
+                        f"(Friedman p={p_friedman_ab_otsu:.4e})."
+                    )
+                else:
+                    st.warning(
+                        "Otsu-filtered zone abundance did not reach significance "
+                        f"(Friedman p={p_friedman_ab_otsu:.4g})."
+                    )
 
             conover_df_ab = dash_meta.get("conover_abundance_results")
             if conover_df_ab is not None and not conover_df_ab.empty:
@@ -1279,6 +1342,11 @@ if run_current or run_all:
         run_config["master_csv"] = os.path.relpath(master_csv, run_dir)
         if os.path.isfile(master_png):
             run_config["summary_png"] = os.path.relpath(master_png, run_dir)
+        try:
+            if stat_summary_csv and os.path.isfile(stat_summary_csv):
+                run_config["stat_summary_csv"] = os.path.relpath(stat_summary_csv, run_dir)
+        except NameError:
+            pass
     save_run_config_files(run_dir, run_config, channel_snapshot)
     st.session_state["last_run_dir"] = run_dir
     render_streamlit_download_section(st, run_dir)

@@ -10,11 +10,25 @@ from skimage.filters import gaussian, threshold_otsu
 from scipy.ndimage import distance_transform_edt, zoom
 from skimage.exposure import rescale_intensity
 from nmj_master_dashboard import (
+    BTX_CLASS_EARLY_NMJ,
+    BTX_CLASS_MUSCLE,
+    BTX_CLASS_NEURON,
+    BTX_CLASS_ORPHANED,
+    BTX_SIGNAL_CLASS_ORDER,
+    BTX_SIGNAL_CLASS_PALETTE,
+    BTX_SIGNAL_CLASS_LEGACY_ALIASES,
+    MIN_PIXELS_FOR_SHAPE,
+    RESOLUTION_CLASS_LOWRES_UM_PER_PIXEL,
+    ROUNDNESS_KRUSKAL_CLASSES,
+    dataframe_for_roundness_kde_and_kruskal,
+    normalize_btx_signal_classes,
     annotate_global_btx_intensity_otsu,
     collect_image_jobs,
     get_confocal_metadata,
     load_confocal_image,
     total_image_area_um2_from_metadata,
+    get_proximity_analysis_title,
+    proximity_analysis_results,
 )
 
 from nmj_run_output import (
@@ -25,20 +39,6 @@ from nmj_run_output import (
     snapshot_channel_mappings,
 )
 
-BTX_SIGNAL_CLASS_ORDER = ("NMJ", "Aneural AChR clusters", "Neuron-associated BTX signal", "Orphaned")
-BTX_SIGNAL_CLASS_PALETTE = {
-    "NMJ": "red",
-    "Aneural AChR clusters": "green",
-    "Neuron-associated BTX signal": "blue",
-    "Orphaned": "gray",
-}
-
-BTX_SIGNAL_CLASS_LEGACY_ALIASES = {
-    "Muscle Only": "Aneural AChR clusters",
-    "Muscle only": "Aneural AChR clusters",
-    "Neuron Only": "Neuron-associated BTX signal",
-    "Neuron only": "Neuron-associated BTX signal",
-}
 
 # Each subdirectory under this path is one dataset folder (contains `.czi` files).
 DATA_ROOT = "data"
@@ -58,37 +58,6 @@ def format_auto_thr_sensitivity_label(mode: str) -> str:
     if mode == "High":
         return f"High ({DOG_SIGMA_RATIO_HIGH:g})"
     return f"Conservative ({DOG_SIGMA_RATIO_CONSERVATIVE:g})"
-
-
-MIN_PIXELS_FOR_SHAPE = 20
-RESOLUTION_CLASS_LOWRES_UM_PER_PIXEL = 0.5
-
-ROUNDNESS_KRUSKAL_CLASSES = ("NMJ", "Aneural AChR clusters", "Neuron-associated BTX signal")
-
-
-def dataframe_for_roundness_kde_and_kruskal(df):
-    """Roundness KDE input: three tissue classes, AREA_PX ≥ MIN_PIXELS_FOR_SHAPE, finite ROUNDNESS."""
-    if df is None:
-        return pd.DataFrame()
-    if len(df) == 0:
-        return df.iloc[0:0]
-    required = {"AREA_PX", "BTX signal class", "ROUNDNESS"}
-    if not required <= set(df.columns):
-        return df.iloc[0:0]
-    return df[
-        (df["AREA_PX"] >= MIN_PIXELS_FOR_SHAPE)
-        & (df["BTX signal class"].isin(ROUNDNESS_KRUSKAL_CLASSES))
-    ].dropna(subset=["ROUNDNESS"])
-
-
-def normalize_btx_signal_classes(df):
-    if df is None or len(df) == 0 or "BTX signal class" not in df.columns:
-        return df
-    out = df.copy()
-    out["BTX signal class"] = (
-        out["BTX signal class"].astype(str).str.strip().replace(BTX_SIGNAL_CLASS_LEGACY_ALIASES)
-    )
-    return out
 
 
 def proximity_joint_axes(fig, outer_cell, hspace=0.08, wspace=0.08, title_first=False):
@@ -148,57 +117,6 @@ def _scatter_dataframe_with_clip_jitter(df, sigma_um=0.02, seed=42):
     out["Dist_to_Muscle_um"] = mx
     out["Dist_to_Neuron_um"] = my
     return out
-
-
-def _mannwhitney_neuron_distance_nmij_vs_aneural(df, min_per_group=3):
-    """NMJ vs Aneural ``Dist_to_Neuron_um``, one-sided (NMJ stochastically smaller). Returns dict or None."""
-    from scipy.stats import mannwhitneyu
-
-    if df is None or len(df) == 0:
-        return None
-    if "BTX signal class" not in df.columns or "Dist_to_Neuron_um" not in df.columns:
-        return None
-    dist_nmj = df[df["BTX signal class"] == "NMJ"]["Dist_to_Neuron_um"].dropna()
-    dist_aneural = df[df["BTX signal class"] == "Aneural AChR clusters"]["Dist_to_Neuron_um"].dropna()
-    if len(dist_nmj) < min_per_group or len(dist_aneural) < min_per_group:
-        return None
-    try:
-        _, p_val = mannwhitneyu(dist_nmj, dist_aneural, alternative="less")
-    except ValueError:
-        return None
-    return {
-        "p_val": float(p_val),
-        "med_nmj": float(dist_nmj.median()),
-        "med_aneural": float(dist_aneural.median()),
-    }
-
-
-def get_spatial_docking_title(df, label_base="1. Synaptic Docking Precision", n_spots=None, min_per_group=3):
-    """
-    Synaptic docking precision: compare ``Dist_to_Neuron_um`` (edge distance to neuron) for NMJs
-    vs muscle-only (Aneural) clusters. ``alternative='less'`` tests whether NMJs sit closer to
-    the neuron channel mask (more precisely docked).
-    """
-    head = label_base if n_spots is None else f"{label_base} (n={n_spots})"
-    if df is None or len(df) == 0:
-        return f"{head}\n(No Data)"
-    res = _mannwhitney_neuron_distance_nmij_vs_aneural(df, min_per_group=min_per_group)
-    if res is None:
-        return (
-            f"{head}\n(Insufficient clusters for Mann-Whitney; need ≥{min_per_group} NMJ and ≥{min_per_group} Aneural)"
-        )
-    p_val = res["p_val"]
-    sig = "***" if p_val < 0.001 else "**" if p_val < 0.01 else "*" if p_val < 0.05 else "ns"
-    return (
-        f"{head}\n(Mann-Whitney P = {p_val:.4g} {sig} | "
-        f"NMJ: {res['med_nmj']:.2f} μm vs Aneural: {res['med_aneural']:.2f} μm)"
-    )
-
-
-def spatial_docking_mannwhitneyu_p(df, min_per_group=3):
-    """Per-image summary table: p-value or NaN when the test cannot be run."""
-    res = _mannwhitney_neuron_distance_nmij_vs_aneural(df, min_per_group=min_per_group)
-    return float(res["p_val"]) if res is not None else float("nan")
 
 
 def draw_proximity_joint(
@@ -285,7 +203,9 @@ def draw_proximity_joint(
     ax_main.axvline(x=distance_threshold_um, color="black", linestyle="--")
     ax_main.axhline(y=distance_threshold_um, color="black", linestyle="--")
     n_spots = int(len(df)) if df is not None else 0
-    full_title = get_spatial_docking_title(df, label_base=title, n_spots=n_spots)
+    full_title = get_proximity_analysis_title(
+        df, label_base=title, n_spots=n_spots, primary_image_level=False
+    )
     if title_ax is not None:
         title_ax.clear()
         title_ax.axis("off")
@@ -810,13 +730,13 @@ if st.button("🚀 Process Pipeline", type="primary"):
 
             def classify_quadrant(row):
                 if row['Dist_to_Muscle_um'] <= distance_threshold_um and row['Dist_to_Neuron_um'] <= distance_threshold_um:
-                    return 'NMJ'
+                    return BTX_CLASS_EARLY_NMJ
                 elif row['Dist_to_Muscle_um'] <= distance_threshold_um:
-                    return 'Aneural AChR clusters'
+                    return BTX_CLASS_MUSCLE
                 elif row['Dist_to_Neuron_um'] <= distance_threshold_um:
-                    return 'Neuron-associated BTX signal'
+                    return BTX_CLASS_NEURON
                 else:
-                    return 'Orphaned'
+                    return BTX_CLASS_ORPHANED
 
             df_spots['BTX signal class'] = df_spots.apply(classify_quadrant, axis=1)
             df_spots = normalize_btx_signal_classes(df_spots)
@@ -835,32 +755,39 @@ if st.button("🚀 Process Pipeline", type="primary"):
             near_n_only = len(df_spots[(df_spots['Dist_to_Neuron_um'] <= distance_threshold_um) & (df_spots['Dist_to_Muscle_um'] > distance_threshold_um)])
             orphaned = len(df_spots[(df_spots['Dist_to_Muscle_um'] > distance_threshold_um) & (df_spots['Dist_to_Neuron_um'] > distance_threshold_um)])
 
-            docking_p = spatial_docking_mannwhitneyu_p(df_spots)
-
             # --- Visualisation ---
             st.divider()
             st.subheader("📊 Results")
             sm1, sm2, sm3 = st.columns(3)
             sm1.metric("Total BTX Spots", total_spots)
-            sm2.metric(f"NMJs (≤ {distance_threshold_um} µm)", nmj_count)
-            sm3.metric("NMJ Formation Rate", f"{formation_rate:.2f}%")
+            sm2.metric(f"{BTX_CLASS_EARLY_NMJ} (≤ {distance_threshold_um} µm)", nmj_count)
+            sm3.metric(f"{BTX_CLASS_EARLY_NMJ} Formation Rate", f"{formation_rate:.2f}%")
 
             st.markdown("### Proximity Statistics")
-            st.markdown(f"- **Near Aneural AChR clusters:** {near_m_only}")
-            st.markdown(f"- **Near Neuron-associated BTX signal:** {near_n_only}")
-            st.markdown(f"- **Orphaned (Far from both):** {orphaned}")
-            if np.isnan(docking_p):
-                st.markdown(
-                    "- **Synaptic docking precision (Mann–Whitney):** not computed "
-                    "(need ≥3 NMJ and ≥3 Aneural clusters in this image)."
-                )
+            st.markdown(f"- **{BTX_CLASS_MUSCLE}:** {near_m_only}")
+            st.markdown(f"- **{BTX_CLASS_NEURON}:** {near_n_only}")
+            st.markdown(f"- **{BTX_CLASS_ORPHANED} (Far from both):** {orphaned}")
+
+            prox = proximity_analysis_results(df_spots)
+            if prox is None:
+                st.markdown("- **Proximity tests:** not enough data.")
             else:
-                docking_sig = "***" if docking_p < 0.001 else "**" if docking_p < 0.01 else "*" if docking_p < 0.05 else "ns"
-                st.markdown(
-                    f"- **Synaptic docking precision (Mann–Whitney, one-sided):** `{docking_p:.4g}` {docking_sig} "
-                    "— tests whether NMJs are closer to the neuron signal than muscle-only (aneural) clusters "
-                    "(smaller edge distance to neuron mask)."
-                )
+                muscle = prox.get("muscle_kruskal")
+                neuron = prox.get("neuron_kruskal")
+                if muscle is not None:
+                    st.markdown(
+                        f"- **Distance to muscle (Kruskal–Wallis across classes):** "
+                        f"`p={muscle['p_value']:.4g}`"
+                    )
+                if neuron is not None:
+                    st.markdown(
+                        f"- **Distance to neuron (Kruskal–Wallis across classes):** "
+                        f"`p={neuron['p_value']:.4g}`"
+                    )
+                if muscle is None and neuron is None:
+                    st.markdown(
+                        "- **Proximity tests:** need ≥3 spots per class for Kruskal–Wallis."
+                    )
             file_stem = os.path.splitext(selected_czi)[0]
             out_csv = mirror_dataset_output_path(
                 run_dir, data_root_abs, folder_path, f"{file_stem}_analysis.csv"
@@ -934,7 +861,7 @@ if st.button("🚀 Process Pipeline", type="primary"):
                     clip=(0, 1),
                     warn_singular=False,
                 )
-            ax_circ_kde.set_title("3. NMJ Roundness KDE (1 − eccentricity)")
+            ax_circ_kde.set_title(f"3. {BTX_CLASS_EARLY_NMJ} Roundness KDE (1 − eccentricity)")
             ax_circ_kde.set_xlabel("Roundness (1 = circle)")
             ax_circ_kde.set_ylabel('Probability Density')
             ax_circ_kde.set_xlim(0, 1)
@@ -947,7 +874,7 @@ if st.button("🚀 Process Pipeline", type="primary"):
                     palette=BTX_SIGNAL_CLASS_PALETTE, ax=ax_size_kde,
                     common_norm=False, fill=True
                 )
-            ax_size_kde.set_title('2. NMJ Size KDE')
+            ax_size_kde.set_title('2. BTX Size KDE')
             ax_size_kde.set_xlabel('Radius (μm)')
             ax_size_kde.set_ylabel('Probability Density')
             
@@ -959,8 +886,8 @@ if st.button("🚀 Process Pipeline", type="primary"):
                     palette=BTX_SIGNAL_CLASS_PALETTE, ax=ax_overlap_kde,
                     common_norm=False, multiple="layer"
                 )
-            ax_overlap_kde.set_title('4. NMJ Innervation Distribution')
-            ax_overlap_kde.set_xlabel('NMJ Innervation (%)')
+            ax_overlap_kde.set_title(f'4. {BTX_CLASS_EARLY_NMJ} Innervation Distribution')
+            ax_overlap_kde.set_xlabel(f'{BTX_CLASS_EARLY_NMJ} Innervation (%)')
             ax_overlap_kde.set_ylabel('Count')
             
             # Graph 9: Mean Intensity KDE
@@ -982,7 +909,7 @@ if st.button("🚀 Process Pipeline", type="primary"):
                 ax_prox_kde_y,
                 df_spots,
                 distance_threshold_um,
-                "1. NMJ Proximity Analysis",
+                "1. BTX Proximity Analysis",
                 marginal_combined_black=True,
                 title_ax=ax_prox_title,
             )
@@ -1006,7 +933,7 @@ if st.button("🚀 Process Pipeline", type="primary"):
             
             # Graph 5: Composite Image + NMJ Arrows
             ax_comp_arrows.imshow(composite_rgb)
-            ax_comp_arrows.set_title("9. Composite + Functional NMJs Only")
+            ax_comp_arrows.set_title(f"9. Composite + {BTX_CLASS_EARLY_NMJ} Only")
             ax_comp_arrows.axis('off')
             
             # Plot the overlays
