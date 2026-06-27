@@ -264,14 +264,22 @@ BTX_SIGNAL_CLASS_HISTOGRAM_LABELS = {
 
 
 def global_btx_intensity_otsu_threshold(intensities):
-    """Otsu on pooled spot ``MEAN_INTENSITY`` values (all classes combined)."""
+    """Otsu on pooled spot ``MEAN_INTENSITY`` values (all classes combined).
+
+    Spot means are rounded to integer A.U. before histogramming so the cutoff is
+    one bin per brightness level (same rule skimage uses for 8/16-bit images) and
+    does not drift with float ``nbins`` or source bit depth.
+    """
     from skimage.filters import threshold_otsu
 
     arr = np.asarray(intensities, dtype=np.float64)
     arr = arr[np.isfinite(arr)]
     if arr.size < 2:
         return np.nan
-    return float(threshold_otsu(arr))
+    discrete = np.rint(arr).astype(np.int64)
+    if np.unique(discrete).size < 2:
+        return float(discrete[0])
+    return float(threshold_otsu(discrete))
 
 
 GLOBAL_BTX_INTENSITY_OTSU_COL = "GLOBAL_BTX_INTENSITY_OTSU"

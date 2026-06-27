@@ -113,7 +113,7 @@ Segmentation threshold is tied to DoG detection (not Otsu on small crops). Batch
 | `Dist_to_Muscle_um`, `Dist_to_Neuron_um` | Edge-corrected EDT minus spot radius (µm), clamped ≥ 0 |
 | `Dist_to_Muscle_center_um`, `Dist_to_Neuron_center_um` | Center-only EDT (QC) |
 | `INNERVATION_OVERLAP_PCT` | Spot mask overlap with neuron channel (%) |
-| `MEAN_INTENSITY` | Mean haze-subtracted BTX inside spot mask |
+| `MEAN_INTENSITY` | Mean haze-subtracted BTX inside spot mask (float A.U. in CSV; rounded to nearest integer A.U. only for global Otsu in §4) |
 | `ROUNDNESS` | `1 − eccentricity` from inertia tensor eigenvalues |
 | `RADIUS` | Spot radius (µm) |
 | `Resolution_Class` | `Low-Res` if pixel size > 0.5 µm/px |
@@ -195,7 +195,15 @@ Per-image spot counts by class are normalized by the corresponding zone mask are
 
 ### 4. Global intensity Otsu
 
-Computed across **all spots** in a batch run (`global_btx_intensity_otsu_threshold`). Used for:
+Computed across **all spots** in a batch run (`global_btx_intensity_otsu_threshold`):
+
+1. Collect every spot’s `MEAN_INTENSITY` (all classes pooled).
+2. **Round each value to the nearest integer A.U.** (`np.rint`) so the histogram has one bin per brightness level — same rule skimage uses for 8/16-bit pixel images, and independent of float `nbins` or source bit depth.
+3. Run Otsu on that discrete histogram → one batch-wide cutoff (stored as `GLOBAL_BTX_INTENSITY_OTSU` on every master CSV row).
+
+Spots are filtered with the **original float** `MEAN_INTENSITY ≥` cutoff; rounding applies only to **finding** the threshold, not to per-spot values in the table.
+
+Used for:
 
 - Vertical line on aggregate intensity histogram  
 - Otsu-filtered KDE / abundance panels  

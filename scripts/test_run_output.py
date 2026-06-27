@@ -148,6 +148,23 @@ class OtsuAbundanceStatsTest(unittest.TestCase):
         self.assertNotAlmostEqual(by_folder["FolderB"], 6000.0)
 
 
+class GlobalBtxOtsuThresholdTest(unittest.TestCase):
+    def test_integer_au_histogram_stable_for_fractional_spot_means(self):
+        import numpy as np
+        from skimage.filters import threshold_otsu
+
+        from nmj_master_dashboard import global_btx_intensity_otsu_threshold
+
+        dim = np.full(500, 400.25)
+        bright = np.full(500, 1800.75)
+        fractional = np.concatenate([dim, bright])
+
+        th = global_btx_intensity_otsu_threshold(fractional)
+        self.assertEqual(th, float(threshold_otsu(np.rint(fractional).astype(np.int64))))
+        self.assertNotEqual(th, float(threshold_otsu(fractional, nbins=256)))
+        self.assertNotEqual(th, float(threshold_otsu(fractional, nbins=512)))
+
+
 class DashboardFunctionalityTest(unittest.TestCase):
     def test_zone_abundance_normalized_per_mm2(self):
         import pandas as pd
@@ -385,6 +402,7 @@ def smoke_test_one_image() -> None:
 if __name__ == "__main__":
     suite = unittest.defaultTestLoader.loadTestsFromTestCase(RunOutputHelpersTest)
     suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(OtsuAbundanceStatsTest))
+    suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(GlobalBtxOtsuThresholdTest))
     suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(DashboardFunctionalityTest))
     result = unittest.TextTestRunner(verbosity=2).run(suite)
     if not result.wasSuccessful():
