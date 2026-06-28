@@ -1189,19 +1189,16 @@ def filter_master_df_to_intensity_paired_images(master_df, paired_table=None, *,
     return master_df.merge(paired_keys, on=key_cols, how="inner")
 
 
-def _draw_global_btx_intensity_histogram_block(
-    fig,
-    parent_spec,
+def _draw_global_btx_intensity_histogram_on_axes(
+    ax_combined,
+    class_axes,
     master_df,
     *,
     title,
     otsu_th,
     xlim=None,
 ):
-    """Combined KDE + per-class histograms inside one outer-grid cell."""
-    gs_hist = parent_spec.subgridspec(2, 4, height_ratios=[1.15, 1.0], hspace=0.42, wspace=0.28)
-    ax_combined = fig.add_subplot(gs_hist[0, :])
-    class_axes = [fig.add_subplot(gs_hist[1, col]) for col in range(4)]
+    """Draw combined KDE + per-class histograms on pre-allocated axes."""
     axes_out = [ax_combined, *class_axes]
 
     master_df = normalize_btx_signal_classes(master_df)
@@ -1314,17 +1311,26 @@ def add_global_btx_intensity_histogram_with_otsu_row(fig, outer, row_idx, master
     else:
         right_title = "Paired NMJ vs Orphan cohort — no qualifying images"
 
-    axes_left = _draw_global_btx_intensity_histogram_block(
-        fig,
-        outer[row_idx, 0],
+    # One full-width subgridspec (2×8) avoids nested gridspec collapse under constrained_layout.
+    gs_hist = outer[row_idx, :].subgridspec(
+        2, 8, height_ratios=[1.15, 1.0], hspace=0.42, wspace=0.28
+    )
+    ax_combined_left = fig.add_subplot(gs_hist[0, 0:4])
+    ax_combined_right = fig.add_subplot(gs_hist[0, 4:8])
+    class_axes_left = [fig.add_subplot(gs_hist[1, col]) for col in range(4)]
+    class_axes_right = [fig.add_subplot(gs_hist[1, col + 4]) for col in range(4)]
+
+    axes_left = _draw_global_btx_intensity_histogram_on_axes(
+        ax_combined_left,
+        class_axes_left,
         master_df,
         title=left_title,
         otsu_th=otsu_th,
         xlim=xlim,
     )
-    axes_right = _draw_global_btx_intensity_histogram_block(
-        fig,
-        outer[row_idx, 1],
+    axes_right = _draw_global_btx_intensity_histogram_on_axes(
+        ax_combined_right,
+        class_axes_right,
         paired_master,
         title=right_title,
         otsu_th=otsu_th,
@@ -2201,7 +2207,7 @@ def build_aggregate_batch_dashboard_figure(master_df, distance_threshold_um, *, 
     fig_w = 24 if run_all else 20
     fig = plt.figure(figsize=(fig_w, fig_h), constrained_layout=True)
     fig.set_constrained_layout_pads(w_pad=0.02, h_pad=0.02, hspace=0.01, wspace=0.01)
-    height_ratios = [1.35] + [1.0] * (n_rows - 2) + [0.95]
+    height_ratios = [1.55] + [1.0] * (n_rows - 2) + [0.95]
     outer = fig.add_gridspec(n_rows, 2, height_ratios=height_ratios)
 
     hist_axes, global_otsu_th, paired_intensity_images_df = add_global_btx_intensity_histogram_with_otsu_row(
