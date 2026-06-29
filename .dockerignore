@@ -1,0 +1,9 @@
+.git
+.gitignore
+output
+data
+__pycache__
+*.pyc
+.DS_Store
+*.md
+readme

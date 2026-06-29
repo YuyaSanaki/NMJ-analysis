@@ -1,5 +1,6 @@
-# Pinned working stack (Python 3.12.13 in Docker). Rebuild image after changes:
-#   docker compose --profile batch build
+# Direct dependencies (edit here). Full transitive pins + hashes: requirements.lock
+# Regenerate lock (Mac/Linux with Docker):  ./scripts/lock_requirements.sh
+# Rebuild image:  docker compose --profile batch build --no-cache
 
 # Core scientific
 numpy==2.5.0
