@@ -53,12 +53,58 @@ from nmj_master_dashboard import (
 )
 
 from nmj_run_output import (
+    apply_channel_mapping_to_session_keys,
+    channel_config_state_key,
     create_run_output_dir,
+    default_channel_config_for_file,
+    export_channel_mapping_from_session,
     mirror_dataset_output_path,
+    read_channel_mapping_config,
     render_streamlit_download_section,
+    resolve_channel_mapping_for_folder,
     save_run_config_files,
     snapshot_channel_mappings,
 )
+
+# Session keys for per-folder channel mapping (survive dataset folder changes).
+_ACTIVE_CHANNEL_FOLDER_KEY = "_channel_config_active_folder"
+_CHANNEL_MAPPING_CACHE_KEY = "_channel_mapping_cache"
+_CHANNEL_FOLDER_FILES_KEY = "_channel_folder_czi_files"
+
+
+def _snapshot_channel_mapping_for_folder(folder_rel, czi_files):
+    if not czi_files:
+        return
+    exported = export_channel_mapping_from_session(folder_rel, czi_files, st.session_state)
+    if exported:
+        st.session_state.setdefault(_CHANNEL_MAPPING_CACHE_KEY, {})[folder_rel] = exported
+
+
+def _apply_channel_mapping_for_folder(folder_rel, folder_path, czi_files):
+    cache = st.session_state.get(_CHANNEL_MAPPING_CACHE_KEY, {})
+    mapping = resolve_channel_mapping_for_folder(
+        folder_rel,
+        disk_mapping=read_channel_mapping_config(folder_path),
+        cache_mapping=cache.get(folder_rel),
+    )
+    if not mapping:
+        return False
+    for key, value in apply_channel_mapping_to_session_keys(folder_rel, mapping, czi_files).items():
+        st.session_state[key] = value
+    st.session_state.setdefault(_CHANNEL_MAPPING_CACHE_KEY, {})[folder_rel] = mapping
+    return True
+
+
+def sync_selected_folder_channel_mapping(folder_rel, folder_path, czi_files):
+    """Snapshot the previous folder and restore mapping for the newly selected folder."""
+    prev = st.session_state.get(_ACTIVE_CHANNEL_FOLDER_KEY)
+    folder_files = st.session_state.setdefault(_CHANNEL_FOLDER_FILES_KEY, {})
+    if prev != folder_rel:
+        if prev is not None and prev in folder_files:
+            _snapshot_channel_mapping_for_folder(prev, folder_files[prev])
+        st.session_state[_ACTIVE_CHANNEL_FOLDER_KEY] = folder_rel
+        _apply_channel_mapping_for_folder(folder_rel, folder_path, czi_files)
+    folder_files[folder_rel] = list(czi_files)
 
 # Each subdirectory under this path is one dataset folder (contains `.czi` files).
 DATA_ROOT = "data"
@@ -113,6 +159,8 @@ folder_path = os.path.join(DATA_ROOT, selected_folder)
 # Supported files in the selected folder (non-recursively for the UI configuration)
 czi_files = [f for d, f in all_jobs_global if same_dir(d, folder_path)]
 
+sync_selected_folder_channel_mapping(selected_folder, folder_path, czi_files)
+
 # --- 2. Extract Metadata & Config for Batch ---
 @st.cache_data(show_spinner=False)
 def fast_czi_meta(path):
@@ -127,39 +175,28 @@ config_json_path = os.path.join(folder_path, "channel_mapping_config.json")
 
 if c_exp.button("💾 Save Settings to Folder"):
     import json
-    export_data = {}
-    for f in czi_files:
-        if f"m_{f}" in st.session_state:
-            export_data[f] = {
-                "m": st.session_state.get(f"m_{f}", 0),
-                "n": st.session_state.get(f"n_{f}", 0),
-                "b": st.session_state.get(f"b_{f}", 0),
-                "p": st.session_state.get(f"p_{f}", 1.0),
-                "skip": st.session_state.get(f"skip_{f}", False)
-            }
+    export_data = export_channel_mapping_from_session(
+        selected_folder, czi_files, st.session_state
+    )
     try:
         with open(config_json_path, "w") as jf:
             json.dump(export_data, jf, indent=4)
+        st.session_state.setdefault(_CHANNEL_MAPPING_CACHE_KEY, {})[selected_folder] = export_data
         st.success("Config saved successfully.")
     except Exception as e:
         st.error(f"Failed to save: {e}")
 
 if c_imp.button("📂 Load Settings from Folder"):
-    import json
-    if os.path.exists(config_json_path):
-        try:
-            with open(config_json_path, "r") as jf:
-                imported_data = json.load(jf)
-            for cf in czi_files:
-                if cf in imported_data:
-                    st.session_state[f"m_{cf}"] = imported_data[cf]["m"]
-                    st.session_state[f"n_{cf}"] = imported_data[cf]["n"]
-                    st.session_state[f"b_{cf}"] = imported_data[cf]["b"]
-                    st.session_state[f"p_{cf}"] = imported_data[cf]["p"]
-                    st.session_state[f"skip_{cf}"] = imported_data[cf].get("skip", False)
-            st.rerun()
-        except Exception as e:
-            st.error(f"Failed to load: {e}")
+    mapping = read_channel_mapping_config(folder_path)
+    if mapping:
+        for key, value in apply_channel_mapping_to_session_keys(
+            selected_folder, mapping, czi_files
+        ).items():
+            st.session_state[key] = value
+        st.session_state.setdefault(_CHANNEL_MAPPING_CACHE_KEY, {})[selected_folder] = mapping
+        st.rerun()
+    elif os.path.exists(config_json_path):
+        st.error("Failed to load channel mapping config.")
     else:
         st.warning("No `channel_mapping_config.json` found in this folder!")
 
@@ -183,9 +220,9 @@ if len(czi_files) > 0:
     if st.button("🔽 Paste Template to ALL Images", type="secondary"):
         for cf in czi_files:
             n_ch_tmp, _ = fast_czi_meta(os.path.join(folder_path, cf))
-            st.session_state[f"m_{cf}"] = min(g_m, n_ch_tmp-1)
-            st.session_state[f"n_{cf}"] = min(g_n, n_ch_tmp-1)
-            st.session_state[f"b_{cf}"] = min(g_b, n_ch_tmp-1)
+            st.session_state[channel_config_state_key(selected_folder, cf, "m")] = min(g_m, n_ch_tmp - 1)
+            st.session_state[channel_config_state_key(selected_folder, cf, "n")] = min(g_n, n_ch_tmp - 1)
+            st.session_state[channel_config_state_key(selected_folder, cf, "b")] = min(g_b, n_ch_tmp - 1)
             # Intentionally NOT overriding pixel size to preserve true biological scaling!
 
     st.divider()
@@ -196,33 +233,45 @@ if len(czi_files) > 0:
         options_ind = [f"Channel {i+1}" for i in range(n_ch_ind)]
         
         # Initialize session state so the selectboxes don't error out when natively bound
-        if f"m_{czi_file}" not in st.session_state: st.session_state[f"m_{czi_file}"] = 0
-        if f"n_{czi_file}" not in st.session_state: st.session_state[f"n_{czi_file}"] = min(1, n_ch_ind-1)
-        if f"b_{czi_file}" not in st.session_state: st.session_state[f"b_{czi_file}"] = min(3, n_ch_ind-1)
-        if f"p_{czi_file}" not in st.session_state: st.session_state[f"p_{czi_file}"] = float(px_size_ind)
-        if f"skip_{czi_file}" not in st.session_state: st.session_state[f"skip_{czi_file}"] = False
-        
+        defaults = default_channel_config_for_file(n_ch=n_ch_ind, pixel_size_um=px_size_ind)
+        for field, default_val in (
+            ("m", defaults["m"]),
+            ("n", defaults["n"]),
+            ("b", defaults["b"]),
+            ("p", defaults["p"]),
+            ("skip", defaults["skip"]),
+        ):
+            cfg_key = channel_config_state_key(selected_folder, czi_file, field)
+            if cfg_key not in st.session_state:
+                st.session_state[cfg_key] = default_val
+
+        skip_key = channel_config_state_key(selected_folder, czi_file, "skip")
+        m_key = channel_config_state_key(selected_folder, czi_file, "m")
+        n_key = channel_config_state_key(selected_folder, czi_file, "n")
+        b_key = channel_config_state_key(selected_folder, czi_file, "b")
+        p_key = channel_config_state_key(selected_folder, czi_file, "p")
+
         with st.expander(f"▶️ Config: {czi_file}", expanded=False):
-            
+
             c_skip, c_paste, _ = st.columns([1.5, 1.5, 3])
-            skip_file = c_skip.checkbox("🚫 Exclude image from batch", key=f"skip_{czi_file}")
-            
+            skip_file = c_skip.checkbox("🚫 Exclude image from batch", key=skip_key)
+
             # The Paste Button directly artificially modifies the session state properties of the inputs below!
-            if c_paste.button("📋 Paste Template Here", key=f"btn_{czi_file}"):
-                st.session_state[f"m_{czi_file}"] = min(g_m, n_ch_ind-1)
-                st.session_state[f"n_{czi_file}"] = min(g_n, n_ch_ind-1)
-                st.session_state[f"b_{czi_file}"] = min(g_b, n_ch_ind-1)
+            if c_paste.button("📋 Paste Template Here", key=f"btn_{selected_folder}_{czi_file}"):
+                st.session_state[m_key] = min(g_m, n_ch_ind - 1)
+                st.session_state[n_key] = min(g_n, n_ch_ind - 1)
+                st.session_state[b_key] = min(g_b, n_ch_ind - 1)
                 # Intentionally NOT overriding pixel size here!
                 st.rerun() # Force immediate UI refresh to show the newly pasted values
 
             if skip_file:
                 st.warning("Image will be bypassed during batch processing.")
-            
+
             c1, c2, c3, c4 = st.columns(4)
-            m_id = c1.selectbox("Muscle", range(n_ch_ind), format_func=lambda x: options_ind[x], key=f"m_{czi_file}", disabled=skip_file)
-            n_id = c2.selectbox("Neuron", range(n_ch_ind), format_func=lambda x: options_ind[x], key=f"n_{czi_file}", disabled=skip_file)
-            b_id = c3.selectbox("BTX", range(n_ch_ind), format_func=lambda x: options_ind[x], key=f"b_{czi_file}", disabled=skip_file)
-            ps = c4.number_input("Pixel Size", format="%0.7f", key=f"p_{czi_file}", help="Unique biological scale.", disabled=skip_file)
+            m_id = c1.selectbox("Muscle", range(n_ch_ind), format_func=lambda x: options_ind[x], key=m_key, disabled=skip_file)
+            n_id = c2.selectbox("Neuron", range(n_ch_ind), format_func=lambda x: options_ind[x], key=n_key, disabled=skip_file)
+            b_id = c3.selectbox("BTX", range(n_ch_ind), format_func=lambda x: options_ind[x], key=b_key, disabled=skip_file)
+            ps = c4.number_input("Pixel Size", format="%0.7f", key=p_key, help="Unique biological scale.", disabled=skip_file)
             
             file_configs[czi_file] = {"muscle": m_id, "neuron": n_id, "btx": b_id, "pixel_size": ps, "skip": skip_file}
 
@@ -522,25 +571,18 @@ if run_current or run_all:
             conf = file_configs[czi_file]
         else:
             # For folders outside the active UI, try loading saved per-folder configs first
-            import json
-            other_config_path = os.path.join(current_d, "channel_mapping_config.json")
+            folder_configs = read_channel_mapping_config(current_d)
             loaded_conf = None
-            if os.path.exists(other_config_path):
-                try:
-                    with open(other_config_path, "r") as jf:
-                        folder_configs = json.load(jf)
-                    if czi_file in folder_configs:
-                        fc = folder_configs[czi_file]
-                        loaded_conf = {
-                            "muscle": fc["m"],
-                            "neuron": fc["n"],
-                            "btx": fc["b"],
-                            "pixel_size": fc.get("p", 1.0),
-                            "skip": fc.get("skip", False)
-                        }
-                except Exception:
-                    pass
-            
+            if folder_configs and czi_file in folder_configs:
+                fc = folder_configs[czi_file]
+                loaded_conf = {
+                    "muscle": fc["m"],
+                    "neuron": fc["n"],
+                    "btx": fc["b"],
+                    "pixel_size": fc.get("p", 1.0),
+                    "skip": fc.get("skip", False),
+                }
+
             if loaded_conf is not None:
                 conf = loaded_conf
             else:
@@ -1209,12 +1251,18 @@ if run_current or run_all:
             paired_intensity_images_csv = os.path.join(
                 run_dir, f"ALL_FOLDERS_INTENSITY_PAIRED_IMAGES{_thr_tag}.csv"
             )
+            paired_otsu_spot_change_csv = os.path.join(
+                run_dir, f"ALL_FOLDERS_PAIRED_OTSU_SPOT_CHANGE{_thr_tag}.csv"
+            )
         else:
             stat_summary_csv = os.path.join(run_dir, f"BATCH_STAT_SUMMARY{_thr_tag}.csv")
             image_medians_csv = os.path.join(run_dir, f"BATCH_IMAGE_LEVEL_MEDIANS{_thr_tag}.csv")
             otsu_rejection_csv = os.path.join(run_dir, f"BATCH_OTSU_DIM_NOISE_REJECTION{_thr_tag}.csv")
             paired_intensity_images_csv = os.path.join(
                 run_dir, f"BATCH_INTENSITY_PAIRED_IMAGES{_thr_tag}.csv"
+            )
+            paired_otsu_spot_change_csv = os.path.join(
+                run_dir, f"BATCH_PAIRED_OTSU_SPOT_CHANGE{_thr_tag}.csv"
             )
         stat_summary_df.to_csv(stat_summary_csv, index=False)
         if len(image_medians_df) > 0:
@@ -1223,12 +1271,23 @@ if run_current or run_all:
         if len(otsu_dim_noise_df) > 0:
             otsu_dim_noise_df.to_csv(otsu_rejection_csv, index=False)
             st.success(f"Otsu dim-noise rejection table saved: `{otsu_rejection_csv}`")
-        if len(paired_intensity_images_df) > 0:
-            paired_intensity_images_df.to_csv(paired_intensity_images_csv, index=False)
-            st.success(
-                f"Intensity paired-comparison image list saved: `{paired_intensity_images_csv}` "
-                f"({len(paired_intensity_images_df)} images)"
+        paired_intensity_images_df.to_csv(paired_intensity_images_csv, index=False)
+        n_paired_spots = len(paired_intensity_images_df)
+        if n_paired_spots > 0 and {"SOURCE_FOLDER", "SOURCE_IMAGE"} <= set(paired_intensity_images_df.columns):
+            n_paired_images = int(
+                paired_intensity_images_df[["SOURCE_FOLDER", "SOURCE_IMAGE"]].drop_duplicates().shape[0]
             )
+        else:
+            n_paired_images = 0
+        st.success(
+            f"Intensity paired-comparison spot table saved: `{paired_intensity_images_csv}` "
+            f"({n_paired_spots} spot{'s' if n_paired_spots != 1 else ''} "
+            f"from {n_paired_images} image{'s' if n_paired_images != 1 else ''})"
+        )
+        paired_otsu_spot_change_df = dash_meta.get("paired_otsu_spot_change_df")
+        if paired_otsu_spot_change_df is not None:
+            paired_otsu_spot_change_df.to_csv(paired_otsu_spot_change_csv, index=False)
+            st.success(f"Paired vs global Otsu spot-change table saved: `{paired_otsu_spot_change_csv}`")
         st.success(f"Statistical test summary saved: `{stat_summary_csv}`")
 
         global_otsu = dash_meta.get("global_btx_intensity_otsu")
@@ -1359,6 +1418,14 @@ if run_current or run_all:
         try:
             if stat_summary_csv and os.path.isfile(stat_summary_csv):
                 run_config["stat_summary_csv"] = os.path.relpath(stat_summary_csv, run_dir)
+            if paired_intensity_images_csv and os.path.isfile(paired_intensity_images_csv):
+                run_config["paired_intensity_images_csv"] = os.path.relpath(
+                    paired_intensity_images_csv, run_dir
+                )
+            if paired_otsu_spot_change_csv and os.path.isfile(paired_otsu_spot_change_csv):
+                run_config["paired_otsu_spot_change_csv"] = os.path.relpath(
+                    paired_otsu_spot_change_csv, run_dir
+                )
         except NameError:
             pass
     save_run_config_files(run_dir, run_config, channel_snapshot)

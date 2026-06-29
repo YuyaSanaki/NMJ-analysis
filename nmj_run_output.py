@@ -10,6 +10,88 @@ from datetime import datetime
 from typing import Any, Iterator
 
 OUTPUT_ROOT = "output"
+CHANNEL_MAPPING_CONFIG_FILENAME = "channel_mapping_config.json"
+
+
+def channel_config_state_key(folder_rel: str, czi_file: str, field: str) -> str:
+    """Streamlit session_state key scoped to one dataset folder and image file."""
+    safe_folder = folder_rel.replace("/", "__").replace("\\", "__")
+    return f"cfg_{field}__{safe_folder}__{czi_file}"
+
+
+def read_channel_mapping_config(folder_path: str) -> dict[str, Any] | None:
+    cfg_path = os.path.join(folder_path, CHANNEL_MAPPING_CONFIG_FILENAME)
+    if not os.path.isfile(cfg_path):
+        return None
+    try:
+        with open(cfg_path, encoding="utf-8") as jf:
+            loaded = json.load(jf)
+        return loaded if isinstance(loaded, dict) else None
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def apply_channel_mapping_to_session_keys(
+    folder_rel: str,
+    mapping: dict[str, Any],
+    czi_files: list[str],
+) -> dict[str, Any]:
+    """Build session_state key/value pairs from a folder's channel_mapping_config.json."""
+    updates: dict[str, Any] = {}
+    for cf in czi_files:
+        if cf not in mapping:
+            continue
+        fc = mapping[cf]
+        updates[channel_config_state_key(folder_rel, cf, "m")] = fc["m"]
+        updates[channel_config_state_key(folder_rel, cf, "n")] = fc["n"]
+        updates[channel_config_state_key(folder_rel, cf, "b")] = fc["b"]
+        updates[channel_config_state_key(folder_rel, cf, "p")] = fc.get("p", 1.0)
+        updates[channel_config_state_key(folder_rel, cf, "skip")] = fc.get("skip", False)
+    return updates
+
+
+def export_channel_mapping_from_session(
+    folder_rel: str,
+    czi_files: list[str],
+    session_values: dict[str, Any],
+) -> dict[str, Any]:
+    """Serialize in-memory channel mapping for one folder to JSON-ready dict."""
+    export_data: dict[str, Any] = {}
+    for fname in czi_files:
+        key_m = channel_config_state_key(folder_rel, fname, "m")
+        if key_m not in session_values:
+            continue
+        export_data[fname] = {
+            "m": session_values.get(channel_config_state_key(folder_rel, fname, "m"), 0),
+            "n": session_values.get(channel_config_state_key(folder_rel, fname, "n"), 0),
+            "b": session_values.get(channel_config_state_key(folder_rel, fname, "b"), 0),
+            "p": session_values.get(channel_config_state_key(folder_rel, fname, "p"), 1.0),
+            "skip": session_values.get(channel_config_state_key(folder_rel, fname, "skip"), False),
+        }
+    return export_data
+
+
+def resolve_channel_mapping_for_folder(
+    folder_rel: str,
+    *,
+    disk_mapping: dict[str, Any] | None,
+    cache_mapping: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Prefer in-session cache over on-disk JSON when re-entering a dataset folder."""
+    if cache_mapping:
+        return cache_mapping
+    return disk_mapping
+
+
+def default_channel_config_for_file(*, n_ch: int, pixel_size_um: float) -> dict[str, Any]:
+    n_ch_safe = max(int(n_ch), 1)
+    return {
+        "m": 0,
+        "n": min(1, n_ch_safe - 1),
+        "b": min(3, n_ch_safe - 1),
+        "p": float(pixel_size_um),
+        "skip": False,
+    }
 
 
 def create_run_output_dir(*, root: str = OUTPUT_ROOT, when: datetime | None = None) -> str:
@@ -58,15 +140,9 @@ def snapshot_channel_mappings(
             rel_folder = os.path.basename(td)
 
         folder_map: dict[str, Any] = {}
-        cfg_path = os.path.join(td, "channel_mapping_config.json")
-        if os.path.isfile(cfg_path):
-            try:
-                with open(cfg_path, encoding="utf-8") as jf:
-                    loaded = json.load(jf)
-                if isinstance(loaded, dict):
-                    folder_map = loaded
-            except (OSError, json.JSONDecodeError):
-                pass
+        loaded = read_channel_mapping_config(td)
+        if loaded:
+            folder_map = loaded
 
         if active_abs and td == active_abs and active_file_configs:
             for fname, conf in active_file_configs.items():
@@ -149,7 +225,7 @@ def render_streamlit_download_section(st, run_dir: str, *, title: str = "📥 Do
     priority += [
         rel
         for rel, _ in files
-        if rel.endswith(".csv") or ("SUMMARY" in rel and rel.endswith(".png")) or "MASTER_RESULTS" in rel or "STAT_SUMMARY" in rel or "IMAGE_LEVEL_MEDIANS" in rel or "INTENSITY_PAIRED_IMAGES" in rel or "OTSU_DIM_NOISE" in rel
+        if rel.endswith(".csv") or ("SUMMARY" in rel and rel.endswith(".png")) or "MASTER_RESULTS" in rel or "STAT_SUMMARY" in rel or "IMAGE_LEVEL_MEDIANS" in rel or "INTENSITY_PAIRED_IMAGES" in rel or "PAIRED_OTSU_SPOT_CHANGE" in rel or "OTSU_DIM_NOISE" in rel
     ]
     priority = list(dict.fromkeys(priority))
 

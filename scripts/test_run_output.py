@@ -17,10 +17,15 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from nmj_run_output import (  # noqa: E402
+    apply_channel_mapping_to_session_keys,
     build_run_zip_bytes,
+    channel_config_state_key,
     create_run_output_dir,
+    export_channel_mapping_from_session,
     iter_run_files,
     mirror_dataset_output_path,
+    read_channel_mapping_config,
+    resolve_channel_mapping_for_folder,
     save_run_config_files,
     snapshot_channel_mappings,
 )
@@ -87,6 +92,41 @@ class RunOutputHelpersTest(unittest.TestCase):
             self.assertIn("run_config.json", names)
             self.assertIn("channel_mapping_config.json", names)
             self.assertTrue(any(n.endswith("x_analysis.csv") for n in names))
+
+    def test_channel_config_state_key_scopes_by_folder(self):
+        self.assertNotEqual(
+            channel_config_state_key("FolderA", "img.czi", "m"),
+            channel_config_state_key("FolderB", "img.czi", "m"),
+        )
+
+    def test_apply_and_export_channel_mapping_roundtrip(self):
+        folder_rel = "DS1"
+        mapping = {"a.czi": {"m": 0, "n": 1, "b": 2, "p": 0.15, "skip": True}}
+        session = apply_channel_mapping_to_session_keys(folder_rel, mapping, ["a.czi"])
+        self.assertEqual(session[channel_config_state_key(folder_rel, "a.czi", "b")], 2)
+        exported = export_channel_mapping_from_session(folder_rel, ["a.czi"], session)
+        self.assertEqual(exported["a.czi"]["skip"], True)
+        self.assertEqual(exported["a.czi"]["p"], 0.15)
+
+    def test_read_channel_mapping_config_missing_or_invalid(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertIsNone(read_channel_mapping_config(tmp))
+            bad = os.path.join(tmp, "channel_mapping_config.json")
+            with open(bad, "w", encoding="utf-8") as fh:
+                fh.write("{not json")
+            self.assertIsNone(read_channel_mapping_config(tmp))
+
+    def test_resolve_channel_mapping_prefers_cache(self):
+        disk = {"a.czi": {"m": 0, "n": 1, "b": 2, "p": 0.1, "skip": False}}
+        cache = {"a.czi": {"m": 1, "n": 2, "b": 3, "p": 0.2, "skip": True}}
+        resolved = resolve_channel_mapping_for_folder(
+            "DS1", disk_mapping=disk, cache_mapping=cache
+        )
+        self.assertEqual(resolved, cache)
+        self.assertEqual(
+            resolve_channel_mapping_for_folder("DS1", disk_mapping=disk, cache_mapping=None),
+            disk,
+        )
 
 
 class OtsuAbundanceStatsTest(unittest.TestCase):
@@ -292,6 +332,80 @@ class DashboardFunctionalityTest(unittest.TestCase):
             self.assertIsNotNone(meta.get("global_btx_intensity_otsu"))
         finally:
             plt.close(fig)
+
+    def test_build_paired_otsu_spot_change_table(self):
+        import pandas as pd
+
+        from nmj_master_dashboard import (
+            BTX_CLASS_EARLY_NMJ,
+            BTX_CLASS_MUSCLE,
+            BTX_CLASS_ORPHANED,
+            build_paired_otsu_spot_change_by_class_table,
+        )
+
+        paired_df = pd.DataFrame(
+            {
+                "MEAN_INTENSITY": [1400.0, 1300.0, 900.0],
+                "BTX signal class": [BTX_CLASS_EARLY_NMJ, BTX_CLASS_MUSCLE, BTX_CLASS_ORPHANED],
+            }
+        )
+        out = build_paired_otsu_spot_change_by_class_table(paired_df, 1298.0, 1316.0)
+        nmj_row = out[out["BTX signal class"] == BTX_CLASS_EARLY_NMJ].iloc[0]
+        muscle_row = out[out["BTX signal class"] == BTX_CLASS_MUSCLE].iloc[0]
+        orphan_row = out[out["BTX signal class"] == BTX_CLASS_ORPHANED].iloc[0]
+        self.assertEqual(nmj_row["spots_ge_global"], "1 / 1")
+        self.assertEqual(nmj_row["spots_ge_paired"], "1 / 1")
+        self.assertEqual(muscle_row["spots_ge_global"], "1 / 1")
+        self.assertEqual(muscle_row["spots_ge_paired"], "0 / 1")
+        self.assertEqual(orphan_row["spots_ge_global"], "0 / 1")
+        self.assertEqual(orphan_row["spots_ge_paired"], "0 / 1")
+
+    def test_build_batch_stat_summary_includes_paired_spots_table(self):
+        import pandas as pd
+
+        from nmj_master_dashboard import (
+            BTX_CLASS_EARLY_NMJ,
+            BTX_CLASS_ORPHANED,
+            INTENSITY_PAIRED_COMPARISON_SPOTS_COLUMNS,
+            build_batch_stat_summary_dataframe,
+            ensure_roundness_column,
+            global_btx_intensity_otsu_threshold,
+            normalize_btx_signal_classes,
+        )
+
+        rows = []
+        for spot_i in range(4):
+            rows.append(
+                {
+                    "SOURCE_FOLDER": "FolderA",
+                    "SOURCE_IMAGE": "paired.czi",
+                    "SPOT_ID": spot_i,
+                    "MEAN_INTENSITY": 800.0 if spot_i % 2 == 0 else 400.0,
+                    "Dist_to_Muscle_um": float(spot_i),
+                    "Dist_to_Neuron_um": float(4 - spot_i),
+                    "ROUNDNESS": 0.7,
+                    "AREA_PX": 20,
+                    "INNERVATION_OVERLAP_PCT": 50.0,
+                    "is_NMJ": spot_i % 2 == 0,
+                    "GLOBAL_BTX_INTENSITY_OTSU": 100.0,
+                    "BTX signal class": BTX_CLASS_EARLY_NMJ if spot_i % 2 == 0 else BTX_CLASS_ORPHANED,
+                }
+            )
+        master_df = ensure_roundness_column(normalize_btx_signal_classes(pd.DataFrame(rows)))
+        _, _, _, paired_df = build_batch_stat_summary_dataframe(
+            master_df,
+            distance_threshold_um=1.0,
+            dash_meta={"global_btx_intensity_otsu": 100.0},
+            run_all=True,
+        )
+        self.assertEqual(list(paired_df.columns), list(INTENSITY_PAIRED_COMPARISON_SPOTS_COLUMNS))
+        self.assertEqual(len(paired_df), 4)
+        self.assertEqual(paired_df.iloc[0]["SOURCE_IMAGE"], "paired.czi")
+        self.assertEqual(float(paired_df.iloc[0]["GLOBAL_BTX_INTENSITY_OTSU"]), 100.0)
+        self.assertEqual(
+            float(paired_df.iloc[0]["PAIRED_BTX_INTENSITY_OTSU"]),
+            global_btx_intensity_otsu_threshold(paired_df["MEAN_INTENSITY"]),
+        )
 
     def test_regenerate_from_saved_master_csv_if_present(self):
         import matplotlib

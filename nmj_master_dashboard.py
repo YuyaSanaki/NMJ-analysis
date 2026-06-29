@@ -283,6 +283,7 @@ def global_btx_intensity_otsu_threshold(intensities):
 
 
 GLOBAL_BTX_INTENSITY_OTSU_COL = "GLOBAL_BTX_INTENSITY_OTSU"
+PAIRED_BTX_INTENSITY_OTSU_COL = "PAIRED_BTX_INTENSITY_OTSU"
 
 
 def annotate_global_btx_intensity_otsu(df, *, otsu_value=None):
@@ -305,7 +306,71 @@ def annotate_global_btx_intensity_otsu(df, *, otsu_value=None):
     return out
 
 
-def _draw_otsu_vline(ax, otsu_th, *, show_label=False, ymax_frac=0.95):
+def annotate_paired_intensity_otsu_columns(spots_df, *, global_otsu=None):
+    """Append global (all spots) and paired-cohort Otsu thresholds for plotting."""
+    if spots_df is None:
+        return spots_df
+    out = spots_df.copy()
+    for col in (GLOBAL_BTX_INTENSITY_OTSU_COL, PAIRED_BTX_INTENSITY_OTSU_COL):
+        if col in out.columns:
+            out = out.drop(columns=[col])
+    if global_otsu is None or not np.isfinite(global_otsu):
+        global_otsu = np.nan
+    else:
+        global_otsu = float(global_otsu)
+    if len(out) == 0 or "MEAN_INTENSITY" not in out.columns:
+        paired_otsu = np.nan
+    else:
+        paired_otsu = global_btx_intensity_otsu_threshold(out["MEAN_INTENSITY"])
+    out[GLOBAL_BTX_INTENSITY_OTSU_COL] = global_otsu
+    out[PAIRED_BTX_INTENSITY_OTSU_COL] = paired_otsu
+    return out
+
+
+def compare_global_vs_paired_intensity_otsu(master_df, paired_spots_df, *, global_otsu=None):
+    """Summary dict comparing dataset-global vs paired-cohort Otsu thresholds."""
+    if global_otsu is None or not np.isfinite(global_otsu):
+        if master_df is not None and len(master_df) > 0 and "MEAN_INTENSITY" in master_df.columns:
+            global_otsu = global_btx_intensity_otsu_threshold(master_df["MEAN_INTENSITY"])
+        else:
+            global_otsu = np.nan
+    else:
+        global_otsu = float(global_otsu)
+
+    n_paired_spots = int(len(paired_spots_df)) if paired_spots_df is not None else 0
+    if n_paired_spots > 0 and "MEAN_INTENSITY" in paired_spots_df.columns:
+        paired_otsu = global_btx_intensity_otsu_threshold(paired_spots_df["MEAN_INTENSITY"])
+        gcols = _image_group_columns(paired_spots_df)
+        if gcols is not None:
+            n_paired_images = int(paired_spots_df[gcols].drop_duplicates().shape[0])
+        else:
+            n_paired_images = 0
+    else:
+        paired_otsu = np.nan
+        n_paired_images = 0
+
+    delta = (
+        float(paired_otsu - global_otsu)
+        if np.isfinite(global_otsu) and np.isfinite(paired_otsu)
+        else np.nan
+    )
+    pct_change = (
+        float((paired_otsu / global_otsu - 1.0) * 100.0)
+        if np.isfinite(global_otsu) and global_otsu > 0 and np.isfinite(paired_otsu)
+        else np.nan
+    )
+    return {
+        "global_otsu_au": float(global_otsu) if np.isfinite(global_otsu) else np.nan,
+        "paired_otsu_au": float(paired_otsu) if np.isfinite(paired_otsu) else np.nan,
+        "delta_au": delta,
+        "pct_change": pct_change,
+        "n_all_spots": int(len(master_df)) if master_df is not None else 0,
+        "n_paired_spots": n_paired_spots,
+        "n_paired_images": n_paired_images,
+    }
+
+
+def _draw_otsu_vline(ax, otsu_th, *, show_label=False, ymax_frac=0.95, label_prefix="Otsu"):
     if not np.isfinite(otsu_th):
         return
     ax.axvline(otsu_th, color="black", linestyle="--", linewidth=1.4, zorder=5)
@@ -315,7 +380,7 @@ def _draw_otsu_vline(ax, otsu_th, *, show_label=False, ymax_frac=0.95):
     ax.text(
         otsu_th,
         y_top * ymax_frac,
-        f" Otsu\n {otsu_th:.1f}",
+        f" {label_prefix}\n {otsu_th:.1f}",
         fontsize=8,
         va="top",
         ha="left",
@@ -706,7 +771,7 @@ def build_batch_stat_summary_dataframe(
 ):
     """Primary image-level tests + exploratory spot-pooled tests.
 
-    Returns ``(stat_df, image_medians_df, otsu_dim_noise_df)``.
+    Returns ``(stat_df, image_medians_df, otsu_dim_noise_df, paired_spots_df)``.
     """
     rows = []
     image_medians_df = build_per_image_all_class_medians_table(master_df)
@@ -1104,8 +1169,59 @@ def build_batch_stat_summary_dataframe(
     for col in ("statistic_value", "p_value", "p_value_adjusted"):
         if col in stat_df.columns:
             stat_df[col] = pd.to_numeric(stat_df[col], errors="coerce")
-    paired_images_df = build_intensity_paired_comparison_images_table(master_df)
-    return stat_df, image_medians_df, otsu_dim_noise_df, paired_images_df
+
+    global_otsu = dash_meta.get("global_btx_intensity_otsu") if dash_meta else None
+    paired_spots_df = build_intensity_paired_comparison_spots_table(master_df, global_otsu=global_otsu)
+    otsu_cmp = compare_global_vs_paired_intensity_otsu(
+        master_df, paired_spots_df, global_otsu=global_otsu
+    )
+    if np.isfinite(otsu_cmp["global_otsu_au"]) and np.isfinite(otsu_cmp["paired_otsu_au"]):
+        cmp_row = {
+            "level": "descriptive",
+            "folder": scope,
+            "file": "",
+            "metric": "BTX intensity Otsu threshold comparison",
+            "comparison": "global (all spots) vs paired cohort (panel 01b spots)",
+            "test": "Otsu",
+            "test_design": (
+                f"Global Otsu on n={otsu_cmp['n_all_spots']} spots; "
+                f"paired Otsu on n={otsu_cmp['n_paired_spots']} spots "
+                f"from {otsu_cmp['n_paired_images']} images"
+            ),
+            "statistic": "paired_minus_global_au",
+            "statistic_value": otsu_cmp["delta_au"],
+            "p_value": "",
+            "p_value_adjusted": "",
+            "significance": "",
+            "notes": (
+                f"global_otsu={otsu_cmp['global_otsu_au']:.1f} A.U.; "
+                f"paired_otsu={otsu_cmp['paired_otsu_au']:.1f} A.U.; "
+                f"delta={otsu_cmp['delta_au']:+.1f} A.U. "
+                f"({otsu_cmp['pct_change']:+.2f}%)"
+            ),
+        }
+        stat_df = pd.concat(
+            [stat_df, pd.DataFrame([cmp_row], columns=list(STAT_SUMMARY_COLUMNS))],
+            ignore_index=True,
+        )
+    return stat_df, image_medians_df, otsu_dim_noise_df, paired_spots_df
+
+
+INTENSITY_PAIRED_COMPARISON_SPOTS_COLUMNS = (
+    "SOURCE_FOLDER",
+    "SOURCE_IMAGE",
+    "SPOT_ID",
+    "MEAN_INTENSITY",
+    "BTX signal class",
+    "is_NMJ",
+    "AREA_PX",
+    "ROUNDNESS",
+    "INNERVATION_OVERLAP_PCT",
+    "Dist_to_Muscle_um",
+    "Dist_to_Neuron_um",
+    "GLOBAL_BTX_INTENSITY_OTSU",
+    "PAIRED_BTX_INTENSITY_OTSU",
+)
 
 
 INTENSITY_PAIRED_COMPARISON_IMAGES_COLUMNS = (
@@ -1172,6 +1288,26 @@ def build_intensity_paired_comparison_images_table(master_df, *, otsu_th=None):
     return pd.DataFrame(rows, columns=list(INTENSITY_PAIRED_COMPARISON_IMAGES_COLUMNS))
 
 
+def build_intensity_paired_comparison_spots_table(master_df, *, otsu_th=None, global_otsu=None):
+    """Spot-level rows from images with both early NMJ-like and Orphaned spots."""
+    master_df = normalize_btx_signal_classes(master_df)
+    paired_images = build_intensity_paired_comparison_images_table(master_df, otsu_th=otsu_th)
+    spots = filter_master_df_to_intensity_paired_images(master_df, paired_images, otsu_th=otsu_th)
+    data_cols = [
+        c
+        for c in INTENSITY_PAIRED_COMPARISON_SPOTS_COLUMNS
+        if c not in (GLOBAL_BTX_INTENSITY_OTSU_COL, PAIRED_BTX_INTENSITY_OTSU_COL)
+    ]
+    export_cols = [c for c in data_cols if c in spots.columns]
+    if not export_cols:
+        export_cols = list(data_cols)
+    if len(spots) == 0:
+        out = pd.DataFrame(columns=export_cols)
+    else:
+        out = spots.loc[:, export_cols].copy()
+    return annotate_paired_intensity_otsu_columns(out, global_otsu=global_otsu)
+
+
 def filter_master_df_to_intensity_paired_images(master_df, paired_table=None, *, otsu_th=None):
     """Keep spots only from images in the paired NMJ vs Orphan intensity cohort."""
     master_df = normalize_btx_signal_classes(master_df)
@@ -1189,26 +1325,64 @@ def filter_master_df_to_intensity_paired_images(master_df, paired_table=None, *,
     return master_df.merge(paired_keys, on=key_cols, how="inner")
 
 
-def _draw_global_btx_intensity_histogram_on_axes(
-    ax_combined,
-    class_axes,
+def build_paired_otsu_spot_change_by_class_table(paired_df, global_otsu, paired_otsu):
+    """Per-class spot counts above global vs paired Otsu in the paired intensity cohort."""
+    paired_df = normalize_btx_signal_classes(paired_df)
+    rows = []
+    global_otsu = float(global_otsu) if global_otsu is not None and np.isfinite(global_otsu) else np.nan
+    paired_otsu = float(paired_otsu) if paired_otsu is not None and np.isfinite(paired_otsu) else np.nan
+    for btx_class in BTX_SIGNAL_CLASS_ORDER:
+        sub = paired_df[paired_df["BTX signal class"] == btx_class]
+        n_total = int(len(sub))
+        if n_total > 0 and "MEAN_INTENSITY" in sub.columns:
+            vals = sub["MEAN_INTENSITY"].dropna()
+            n_global = int((vals >= global_otsu).sum()) if np.isfinite(global_otsu) else 0
+            n_paired = int((vals >= paired_otsu).sum()) if np.isfinite(paired_otsu) else 0
+        else:
+            n_global = 0
+            n_paired = 0
+        rows.append(
+            {
+                "BTX signal class": btx_class,
+                "n_spots_total": n_total,
+                "n_spots_ge_global_otsu": n_global,
+                "n_spots_ge_paired_otsu": n_paired,
+                "spots_ge_global": f"{n_global} / {n_total}",
+                "spots_ge_paired": f"{n_paired} / {n_total}",
+                "global_otsu_au": global_otsu,
+                "paired_otsu_au": paired_otsu,
+            }
+        )
+    return pd.DataFrame(rows, columns=list(PAIRED_OTSU_SPOT_CHANGE_COLUMNS))
+
+
+PAIRED_OTSU_SPOT_CHANGE_COLUMNS = (
+    "BTX signal class",
+    "n_spots_total",
+    "n_spots_ge_global_otsu",
+    "n_spots_ge_paired_otsu",
+    "spots_ge_global",
+    "spots_ge_paired",
+    "global_otsu_au",
+    "paired_otsu_au",
+)
+
+
+def _draw_intensity_kde_on_axis(
+    ax,
     master_df,
     *,
     title,
     otsu_th,
     xlim=None,
+    otsu_label_prefix="Otsu",
 ):
-    """Draw combined KDE + per-class histograms on pre-allocated axes."""
-    axes_out = [ax_combined, *class_axes]
-
     master_df = normalize_btx_signal_classes(master_df)
     if master_df is None or len(master_df) == 0 or "MEAN_INTENSITY" not in master_df.columns:
-        ax_combined.text(0.5, 0.5, "No intensity data", ha="center", va="center")
-        ax_combined.set_axis_off()
-        for ax in class_axes:
-            ax.set_axis_off()
-        ax_combined.set_title(title)
-        return axes_out
+        ax.text(0.5, 0.5, "No intensity data", ha="center", va="center")
+        ax.set_axis_off()
+        ax.set_title(title)
+        return
 
     if xlim is None:
         intensities = master_df["MEAN_INTENSITY"].dropna().to_numpy(dtype=np.float64)
@@ -1222,19 +1396,32 @@ def _draw_global_btx_intensity_histogram_on_axes(
             hue="BTX signal class",
             hue_order=BTX_SIGNAL_CLASS_ORDER,
             palette=BTX_SIGNAL_CLASS_PALETTE,
-            ax=ax_combined,
+            ax=ax,
             common_norm=False,
             fill=True,
             warn_singular=False,
             clip=xlim,
         )
     if np.isfinite(otsu_th):
-        _draw_otsu_vline(ax_combined, otsu_th, show_label=True)
-    ax_combined.set_title(title)
-    ax_combined.set_xlabel("Mean Fluorescence Intensity (A.U.)")
-    ax_combined.set_ylabel("Probability Density")
+        _draw_otsu_vline(ax, otsu_th, show_label=True, label_prefix=otsu_label_prefix)
+    ax.set_title(title)
+    ax.set_xlabel("Mean Fluorescence Intensity (A.U.)")
+    ax.set_ylabel("Probability Density")
     if xlim is not None:
-        ax_combined.set_xlim(*xlim)
+        ax.set_xlim(*xlim)
+
+
+def _draw_intensity_class_histograms_on_axes(class_axes, master_df, *, otsu_th, xlim=None):
+    master_df = normalize_btx_signal_classes(master_df)
+    if master_df is None or len(master_df) == 0 or "MEAN_INTENSITY" not in master_df.columns:
+        for ax in class_axes:
+            ax.set_axis_off()
+        return
+
+    if xlim is None:
+        intensities = master_df["MEAN_INTENSITY"].dropna().to_numpy(dtype=np.float64)
+        int_max = float(np.quantile(intensities, 0.999)) if intensities.size else None
+        xlim = (0, int_max * 1.05) if int_max is not None and int_max > 0 else None
 
     for ax, btx_class in zip(class_axes, BTX_SIGNAL_CLASS_ORDER):
         class_df = master_df[master_df["BTX signal class"] == btx_class]
@@ -1278,6 +1465,64 @@ def _draw_global_btx_intensity_histogram_on_axes(
         if xlim is not None:
             ax.set_xlim(*xlim)
 
+
+def _draw_paired_otsu_spot_change_table(ax, table_df, *, global_otsu, paired_otsu):
+    ax.axis("off")
+    g_label = f"{global_otsu:.0f}" if global_otsu is not None and np.isfinite(global_otsu) else "n/a"
+    p_label = f"{paired_otsu:.0f}" if paired_otsu is not None and np.isfinite(paired_otsu) else "n/a"
+    title = (
+        "Paired cohort — spots above Otsu by class\n"
+        f"(global {g_label} A.U. vs paired {p_label} A.U.)"
+    )
+    if table_df is None or len(table_df) == 0:
+        ax.text(0.5, 0.5, "No paired-cohort data", ha="center", va="center")
+        ax.set_title(title, fontsize=9)
+        return
+
+    headers = ["Class", f"Spots ≥ global ({g_label})", f"Spots ≥ paired ({p_label})"]
+    cell_text = [
+        [row["BTX signal class"], row["spots_ge_global"], row["spots_ge_paired"]]
+        for _, row in table_df.iterrows()
+    ]
+    ax.set_title(title, fontsize=9, pad=4, loc="left", x=0.03)
+    table = ax.table(
+        cellText=cell_text,
+        colLabels=headers,
+        loc="upper center",
+        cellLoc="center",
+        bbox=[0.02, 0.04, 0.96, 0.68],
+    )
+    table.auto_set_font_size(False)
+    table.set_fontsize(8.5)
+    table.scale(1.0, 1.22)
+    for (row_idx, col_idx), cell in table.get_celld().items():
+        if row_idx == 0:
+            cell.set_text_props(weight="bold")
+            cell.set_facecolor("#f0f0f0")
+        cell.set_height(0.12)
+
+
+def _draw_global_btx_intensity_histogram_on_axes(
+    ax_combined,
+    class_axes,
+    master_df,
+    *,
+    title,
+    otsu_th,
+    xlim=None,
+    otsu_label_prefix="Otsu",
+):
+    """Draw combined KDE + per-class histograms on pre-allocated axes."""
+    axes_out = [ax_combined, *class_axes]
+    _draw_intensity_kde_on_axis(
+        ax_combined,
+        master_df,
+        title=title,
+        otsu_th=otsu_th,
+        xlim=xlim,
+        otsu_label_prefix=otsu_label_prefix,
+    )
+    _draw_intensity_class_histograms_on_axes(class_axes, master_df, otsu_th=otsu_th, xlim=xlim)
     return axes_out
 
 
@@ -1295,9 +1540,18 @@ def add_global_btx_intensity_histogram_with_otsu_row(fig, outer, row_idx, master
 
     paired_table = build_intensity_paired_comparison_images_table(master_df)
     paired_master = filter_master_df_to_intensity_paired_images(master_df, paired_table)
+    if len(paired_master) > 0:
+        paired_otsu_th = global_btx_intensity_otsu_threshold(paired_master["MEAN_INTENSITY"])
+    else:
+        paired_otsu_th = np.nan
+
+    spot_change_df = build_paired_otsu_spot_change_by_class_table(
+        paired_master, otsu_th, paired_otsu_th
+    )
 
     title_prefix = f"{panel_num}. " if panel_num is not None else ""
     otsu_label = f"{otsu_th:.1f} A.U." if np.isfinite(otsu_th) else "n/a"
+    paired_otsu_label = f"{paired_otsu_th:.1f} A.U." if np.isfinite(paired_otsu_th) else "n/a"
     left_title = (
         f"{title_prefix}Global BTX Intensity — all images "
         f"(Global Otsu = {otsu_label})"
@@ -1306,19 +1560,18 @@ def add_global_btx_intensity_histogram_with_otsu_row(fig, outer, row_idx, master
     if n_paired > 0:
         right_title = (
             f"Paired NMJ vs Orphan cohort — {n_paired} images "
-            f"(same Otsu = {otsu_label})"
+            f"(Paired Otsu = {paired_otsu_label})"
         )
     else:
         right_title = "Paired NMJ vs Orphan cohort — no qualifying images"
 
-    # One full-width subgridspec (2×8) avoids nested gridspec collapse under constrained_layout.
     gs_hist = outer[row_idx, :].subgridspec(
-        2, 8, height_ratios=[1.15, 1.0], hspace=0.42, wspace=0.28
+        2, 8, height_ratios=[1.05, 1.12], hspace=0.62, wspace=0.32
     )
     ax_combined_left = fig.add_subplot(gs_hist[0, 0:4])
     ax_combined_right = fig.add_subplot(gs_hist[0, 4:8])
     class_axes_left = [fig.add_subplot(gs_hist[1, col]) for col in range(4)]
-    class_axes_right = [fig.add_subplot(gs_hist[1, col + 4]) for col in range(4)]
+    ax_spot_change = fig.add_subplot(gs_hist[1, 4:8])
 
     axes_left = _draw_global_btx_intensity_histogram_on_axes(
         ax_combined_left,
@@ -1327,16 +1580,28 @@ def add_global_btx_intensity_histogram_with_otsu_row(fig, outer, row_idx, master
         title=left_title,
         otsu_th=otsu_th,
         xlim=xlim,
+        otsu_label_prefix="Global Otsu",
     )
-    axes_right = _draw_global_btx_intensity_histogram_on_axes(
+    _draw_intensity_kde_on_axis(
         ax_combined_right,
-        class_axes_right,
         paired_master,
         title=right_title,
-        otsu_th=otsu_th,
+        otsu_th=paired_otsu_th,
         xlim=xlim,
+        otsu_label_prefix="Paired Otsu",
     )
-    return axes_left + axes_right, otsu_th, paired_table
+    _draw_paired_otsu_spot_change_table(
+        ax_spot_change,
+        spot_change_df,
+        global_otsu=otsu_th,
+        paired_otsu=paired_otsu_th,
+    )
+
+    intensity_row_meta = {
+        "paired_otsu_spot_change_df": spot_change_df,
+        "paired_btx_intensity_otsu": float(paired_otsu_th) if np.isfinite(paired_otsu_th) else None,
+    }
+    return axes_left + [ax_combined_right, ax_spot_change], otsu_th, paired_table, intensity_row_meta
 
 
 def proximity_joint_axes(
@@ -2207,11 +2472,11 @@ def build_aggregate_batch_dashboard_figure(master_df, distance_threshold_um, *, 
     fig_w = 24 if run_all else 20
     fig = plt.figure(figsize=(fig_w, fig_h), constrained_layout=True)
     fig.set_constrained_layout_pads(w_pad=0.02, h_pad=0.02, hspace=0.01, wspace=0.01)
-    height_ratios = [1.55] + [1.0] * (n_rows - 2) + [0.95]
+    height_ratios = [1.72] + [1.0] * (n_rows - 2) + [0.95]
     outer = fig.add_gridspec(n_rows, 2, height_ratios=height_ratios)
 
-    hist_axes, global_otsu_th, paired_intensity_images_df = add_global_btx_intensity_histogram_with_otsu_row(
-        fig, outer, 0, master_df
+    hist_axes, global_otsu_th, paired_intensity_images_df, intensity_row_meta = (
+        add_global_btx_intensity_histogram_with_otsu_row(fig, outer, 0, master_df)
     )
 
     ax_scatter, ax_prox_kde_x, ax_prox_kde_y, ax_prox_title = proximity_joint_axes(
@@ -2392,7 +2657,9 @@ def build_aggregate_batch_dashboard_figure(master_df, distance_threshold_um, *, 
         "friedman_p_abundance_otsu": float(p_friedman_abundance_otsu) if p_friedman_abundance_otsu is not None else None,
         "conover_abundance_otsu_results": conover_abundance_otsu_results,
         "global_btx_intensity_otsu": float(global_otsu_th) if np.isfinite(global_otsu_th) else None,
+        "paired_btx_intensity_otsu": intensity_row_meta.get("paired_btx_intensity_otsu"),
         "paired_intensity_images_df": paired_intensity_images_df,
+        "paired_otsu_spot_change_df": intensity_row_meta.get("paired_otsu_spot_change_df"),
     }
     return fig, panel_specs, meta
 

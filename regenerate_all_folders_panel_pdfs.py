@@ -104,7 +104,7 @@ def main() -> int:
     run_all = not args.single_row_layout
     stem = args.output_stem or (os.path.splitext(os.path.abspath(args.master_csv))[0] + "_dashboard_regen")
 
-    fig, panel_specs, _meta = build_aggregate_batch_dashboard_figure(
+    fig, panel_specs, meta = build_aggregate_batch_dashboard_figure(
         master_df,
         args.distance_threshold,
         run_all=run_all,
@@ -114,6 +114,25 @@ def main() -> int:
     fig.savefig(out_png, bbox_inches="tight")
     written, errs = _export_figure_panels_to_pdfs(fig, panel_specs, stem)
     plt.close(fig)
+
+    spot_change_df = meta.get("paired_otsu_spot_change_df")
+    if spot_change_df is not None:
+        master_ab = os.path.abspath(args.master_csv)
+        master_base = os.path.basename(master_ab)
+        master_stem, ext = os.path.splitext(master_ab)
+        if "ALL_FOLDERS_MASTER_RESULTS" in master_base:
+            spot_change_csv = (
+                master_stem.replace("ALL_FOLDERS_MASTER_RESULTS", "ALL_FOLDERS_PAIRED_OTSU_SPOT_CHANGE")
+                + ext
+            )
+        elif "BATCH_MASTER_RESULTS" in master_base:
+            spot_change_csv = (
+                master_stem.replace("BATCH_MASTER_RESULTS", "BATCH_PAIRED_OTSU_SPOT_CHANGE") + ext
+            )
+        else:
+            spot_change_csv = os.path.join(os.path.dirname(master_ab), "PAIRED_OTSU_SPOT_CHANGE.csv")
+        spot_change_df.to_csv(spot_change_csv, index=False)
+        print(f"Wrote paired Otsu spot-change CSV: {spot_change_csv}", file=sys.stderr)
 
     print(f"Wrote dashboard PNG: {out_png}")
     if written:
