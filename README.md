@@ -247,7 +247,7 @@ output/20260627_053347/
 | `*_STAT_SUMMARY*.csv` | All statistical tests with `level` column (primary + exploratory) |
 | `*_IMAGE_LEVEL_MEDIANS*.csv` | Per-image, per-class medians — **unit of replication** for primary tests |
 | `*_INTENSITY_PAIRED_IMAGES*.csv` | **Spot-level** export from the paired Wilcoxon cohort (see below); replot panel 01b KDE |
-| `*_PAIRED_OTSU_SPOT_CHANGE*.csv` | Per-class spot counts above global vs paired Otsu in the paired cohort (panel 01b table) |
+| `*_PAIRED_OTSU_SPOT_CHANGE*.csv` | Per-class spot counts above global Otsu (all images) vs paired Otsu (paired cohort only; panel 01b table) |
 | `*_OTSU_DIM_NOISE_REJECTION*.csv` | % spots above global Otsu by class + interpretation |
 | `*_SUMMARY*.png` | Aggregate dashboard figure (12-panel grid; row 0 = intensity histograms) |
 | `run_config.json` | Run parameters, image count, relative paths to key CSVs (`stat_summary_csv`, `paired_intensity_images_csv`, …) |

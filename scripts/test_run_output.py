@@ -343,21 +343,34 @@ class DashboardFunctionalityTest(unittest.TestCase):
             build_paired_otsu_spot_change_by_class_table,
         )
 
+        master_df = pd.DataFrame(
+            {
+                "MEAN_INTENSITY": [1400.0, 1200.0, 1300.0, 900.0, 850.0],
+                "BTX signal class": [
+                    BTX_CLASS_EARLY_NMJ,
+                    BTX_CLASS_EARLY_NMJ,
+                    BTX_CLASS_MUSCLE,
+                    BTX_CLASS_ORPHANED,
+                    BTX_CLASS_ORPHANED,
+                ],
+            }
+        )
         paired_df = pd.DataFrame(
             {
                 "MEAN_INTENSITY": [1400.0, 1300.0, 900.0],
                 "BTX signal class": [BTX_CLASS_EARLY_NMJ, BTX_CLASS_MUSCLE, BTX_CLASS_ORPHANED],
             }
         )
-        out = build_paired_otsu_spot_change_by_class_table(paired_df, 1298.0, 1316.0)
+        out = build_paired_otsu_spot_change_by_class_table(master_df, paired_df, 1298.0, 1316.0)
         nmj_row = out[out["BTX signal class"] == BTX_CLASS_EARLY_NMJ].iloc[0]
         muscle_row = out[out["BTX signal class"] == BTX_CLASS_MUSCLE].iloc[0]
         orphan_row = out[out["BTX signal class"] == BTX_CLASS_ORPHANED].iloc[0]
-        self.assertEqual(nmj_row["spots_ge_global"], "1 / 1")
+        self.assertEqual(nmj_row["n_spots_total"], 2)
+        self.assertEqual(nmj_row["spots_ge_global"], "1 / 2")
         self.assertEqual(nmj_row["spots_ge_paired"], "1 / 1")
         self.assertEqual(muscle_row["spots_ge_global"], "1 / 1")
         self.assertEqual(muscle_row["spots_ge_paired"], "0 / 1")
-        self.assertEqual(orphan_row["spots_ge_global"], "0 / 1")
+        self.assertEqual(orphan_row["spots_ge_global"], "0 / 2")
         self.assertEqual(orphan_row["spots_ge_paired"], "0 / 1")
 
     def test_build_batch_stat_summary_includes_paired_spots_table(self):

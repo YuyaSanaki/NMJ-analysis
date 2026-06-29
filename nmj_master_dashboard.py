@@ -1325,30 +1325,39 @@ def filter_master_df_to_intensity_paired_images(master_df, paired_table=None, *,
     return master_df.merge(paired_keys, on=key_cols, how="inner")
 
 
-def build_paired_otsu_spot_change_by_class_table(paired_df, global_otsu, paired_otsu):
-    """Per-class spot counts above global vs paired Otsu in the paired intensity cohort."""
+def _count_spots_ge_otsu_for_class(sub, otsu):
+    n_total = int(len(sub))
+    if n_total > 0 and "MEAN_INTENSITY" in sub.columns and np.isfinite(otsu):
+        vals = sub["MEAN_INTENSITY"].dropna()
+        n_ge = int((vals >= otsu).sum())
+    else:
+        n_ge = 0
+    return n_total, n_ge
+
+
+def build_paired_otsu_spot_change_by_class_table(master_df, paired_df, global_otsu, paired_otsu):
+    """Per-class spot counts above global vs paired Otsu.
+
+    Global columns use all spots (master_df); paired columns use the paired-cohort subset only.
+    """
+    master_df = normalize_btx_signal_classes(master_df)
     paired_df = normalize_btx_signal_classes(paired_df)
     rows = []
     global_otsu = float(global_otsu) if global_otsu is not None and np.isfinite(global_otsu) else np.nan
     paired_otsu = float(paired_otsu) if paired_otsu is not None and np.isfinite(paired_otsu) else np.nan
     for btx_class in BTX_SIGNAL_CLASS_ORDER:
-        sub = paired_df[paired_df["BTX signal class"] == btx_class]
-        n_total = int(len(sub))
-        if n_total > 0 and "MEAN_INTENSITY" in sub.columns:
-            vals = sub["MEAN_INTENSITY"].dropna()
-            n_global = int((vals >= global_otsu).sum()) if np.isfinite(global_otsu) else 0
-            n_paired = int((vals >= paired_otsu).sum()) if np.isfinite(paired_otsu) else 0
-        else:
-            n_global = 0
-            n_paired = 0
+        sub_all = master_df[master_df["BTX signal class"] == btx_class]
+        sub_paired = paired_df[paired_df["BTX signal class"] == btx_class]
+        n_total_all, n_global = _count_spots_ge_otsu_for_class(sub_all, global_otsu)
+        n_total_paired, n_paired = _count_spots_ge_otsu_for_class(sub_paired, paired_otsu)
         rows.append(
             {
                 "BTX signal class": btx_class,
-                "n_spots_total": n_total,
+                "n_spots_total": n_total_all,
                 "n_spots_ge_global_otsu": n_global,
                 "n_spots_ge_paired_otsu": n_paired,
-                "spots_ge_global": f"{n_global} / {n_total}",
-                "spots_ge_paired": f"{n_paired} / {n_total}",
+                "spots_ge_global": f"{n_global} / {n_total_all}",
+                "spots_ge_paired": f"{n_paired} / {n_total_paired}",
                 "global_otsu_au": global_otsu,
                 "paired_otsu_au": paired_otsu,
             }
@@ -1546,7 +1555,7 @@ def add_global_btx_intensity_histogram_with_otsu_row(fig, outer, row_idx, master
         paired_otsu_th = np.nan
 
     spot_change_df = build_paired_otsu_spot_change_by_class_table(
-        paired_master, otsu_th, paired_otsu_th
+        master_df, paired_master, otsu_th, paired_otsu_th
     )
 
     title_prefix = f"{panel_num}. " if panel_num is not None else ""
