@@ -4,6 +4,7 @@
 #   Single-image UI:  http://localhost:8504  —  docker compose --profile single up --build
 #   Batch UI:         http://localhost:8503  —  docker compose --profile batch up --build
 #
+# Stack (pinned): Python 3.12.13 | packages in requirements.txt | uv 0.9.7
 # Still raise Docker Desktop → Settings → Resources → Memory if analysis OOMs (e.g. 12G+).
 
 services:

@@ -1,12 +1,20 @@
-pandas
-numpy
-matplotlib
-seaborn
-streamlit
-aicspylibczi
-scikit-image
-scipy
-nd2
-readlif
-tifffile
-oirfile
+# Pinned working stack (Python 3.12.13 in Docker). Rebuild image after changes:
+#   docker compose --profile batch build
+
+# Core scientific
+numpy==2.5.0
+scipy==1.18.0
+pandas==3.0.3
+matplotlib==3.11.0
+seaborn==0.13.2
+scikit-image==0.26.0
+
+# Web UI
+streamlit==1.58.0
+
+# Confocal readers (.czi / .nd2 / .lif / .oir / .poir / .tif)
+aicspylibczi==3.3.1
+nd2==0.11.3
+readlif==0.6.6
+oirfile==2026.4.25
+tifffile==2026.6.1
