@@ -1,5 +1,8 @@
 # Neuromuscular Junction (NMJ) Analysis Pipeline
 
+This repository pipline was used in "Self-organization of vascularized muscle from bovine embryonic stem cells".
+AI tools (Cursor and Antigravity) were used to assist with writing codes/documents. The pipline makes a summary PNG file corresponding to each confocal images for BTX staining background subtraction, BTX spot detection, tissue mask, and plots. The authors reviewed, tested, and modified the generated code, and manually verified the results by visual inspection.
+
 A containerized toolkit for detecting, measuring, and classifying BTX-labeled puncta from multi-channel confocal images. Two **Streamlit** apps share the same analysis core:
 
 | App | Compose profile | URL | Use case |
