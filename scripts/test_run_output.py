@@ -333,14 +333,14 @@ class DashboardFunctionalityTest(unittest.TestCase):
         finally:
             plt.close(fig)
 
-    def test_build_paired_otsu_spot_change_table(self):
+    def test_build_otsu_spot_sensitivity_tables(self):
         import pandas as pd
 
         from nmj_master_dashboard import (
             BTX_CLASS_EARLY_NMJ,
             BTX_CLASS_MUSCLE,
             BTX_CLASS_ORPHANED,
-            build_paired_otsu_spot_change_by_class_table,
+            build_otsu_spot_sensitivity_tables,
         )
 
         master_df = pd.DataFrame(
@@ -361,17 +361,34 @@ class DashboardFunctionalityTest(unittest.TestCase):
                 "BTX signal class": [BTX_CLASS_EARLY_NMJ, BTX_CLASS_MUSCLE, BTX_CLASS_ORPHANED],
             }
         )
-        out = build_paired_otsu_spot_change_by_class_table(master_df, paired_df, 1298.0, 1316.0)
-        nmj_row = out[out["BTX signal class"] == BTX_CLASS_EARLY_NMJ].iloc[0]
-        muscle_row = out[out["BTX signal class"] == BTX_CLASS_MUSCLE].iloc[0]
-        orphan_row = out[out["BTX signal class"] == BTX_CLASS_ORPHANED].iloc[0]
+        matrix_df, comparisons_df, legacy_df = build_otsu_spot_sensitivity_tables(
+            master_df, paired_df, global_otsu=1298.0, paired_otsu=1316.0
+        )
+        nmj_row = legacy_df[legacy_df["BTX signal class"] == BTX_CLASS_EARLY_NMJ].iloc[0]
+        muscle_row = legacy_df[legacy_df["BTX signal class"] == BTX_CLASS_MUSCLE].iloc[0]
+        orphan_row = legacy_df[legacy_df["BTX signal class"] == BTX_CLASS_ORPHANED].iloc[0]
         self.assertEqual(nmj_row["n_spots_total"], 2)
-        self.assertEqual(nmj_row["spots_ge_global"], "1 / 2")
-        self.assertEqual(nmj_row["spots_ge_paired"], "1 / 1")
-        self.assertEqual(muscle_row["spots_ge_global"], "1 / 1")
-        self.assertEqual(muscle_row["spots_ge_paired"], "0 / 1")
-        self.assertEqual(orphan_row["spots_ge_global"], "0 / 2")
-        self.assertEqual(orphan_row["spots_ge_paired"], "0 / 1")
+        self.assertEqual(nmj_row["≥ Global Otsu, all images"], "1 / 2")
+        self.assertEqual(nmj_row["≥ Paired Otsu, paired-cohort images"], "1 / 1")
+        self.assertEqual(muscle_row["≥ Global Otsu, all images"], "1 / 1")
+        self.assertEqual(muscle_row["≥ Paired Otsu, paired-cohort images"], "0 / 1")
+        self.assertEqual(orphan_row["≥ Global Otsu, all images"], "0 / 2")
+        self.assertEqual(orphan_row["≥ Paired Otsu, paired-cohort images"], "0 / 1")
+
+        nmj_matrix = matrix_df[matrix_df["BTX signal class"] == BTX_CLASS_EARLY_NMJ].iloc[0]
+        self.assertEqual(nmj_matrix["spots_ge_paired_otsu_all_images"], "1 / 2")
+        self.assertEqual(nmj_matrix["spots_ge_global_otsu_paired_cohort"], "1 / 1")
+
+        threshold_all = comparisons_df[
+            (comparisons_df["comparison_id"] == "threshold_on_all_images")
+            & (comparisons_df["BTX signal class"] == BTX_CLASS_EARLY_NMJ)
+        ].iloc[0]
+        self.assertEqual(threshold_all["n_ge_left"], 1)
+        self.assertEqual(threshold_all["n_ge_right"], 1)
+        self.assertEqual(
+            len(comparisons_df["comparison_id"].unique()),
+            5,
+        )
 
     def test_build_batch_stat_summary_includes_paired_spots_table(self):
         import pandas as pd

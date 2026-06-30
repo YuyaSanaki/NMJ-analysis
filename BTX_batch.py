@@ -45,6 +45,8 @@ from nmj_master_dashboard import (
     _export_figure_panels_to_pdfs,
     build_aggregate_batch_dashboard_figure,
     build_batch_stat_summary_dataframe,
+    present_otsu_spot_count_matrix,
+    present_otsu_spot_change_comparisons,
     SUPPORTED_EXTENSIONS,
     collect_image_jobs,
     get_confocal_metadata,
@@ -1254,6 +1256,12 @@ if run_current or run_all:
             paired_otsu_spot_change_csv = os.path.join(
                 run_dir, f"ALL_FOLDERS_PAIRED_OTSU_SPOT_CHANGE{_thr_tag}.csv"
             )
+            otsu_spot_count_matrix_csv = os.path.join(
+                run_dir, f"ALL_FOLDERS_OTSU_SPOT_COUNT_MATRIX{_thr_tag}.csv"
+            )
+            otsu_spot_change_comparisons_csv = os.path.join(
+                run_dir, f"ALL_FOLDERS_OTSU_SPOT_CHANGE_COMPARISONS{_thr_tag}.csv"
+            )
         else:
             stat_summary_csv = os.path.join(run_dir, f"BATCH_STAT_SUMMARY{_thr_tag}.csv")
             image_medians_csv = os.path.join(run_dir, f"BATCH_IMAGE_LEVEL_MEDIANS{_thr_tag}.csv")
@@ -1263,6 +1271,12 @@ if run_current or run_all:
             )
             paired_otsu_spot_change_csv = os.path.join(
                 run_dir, f"BATCH_PAIRED_OTSU_SPOT_CHANGE{_thr_tag}.csv"
+            )
+            otsu_spot_count_matrix_csv = os.path.join(
+                run_dir, f"BATCH_OTSU_SPOT_COUNT_MATRIX{_thr_tag}.csv"
+            )
+            otsu_spot_change_comparisons_csv = os.path.join(
+                run_dir, f"BATCH_OTSU_SPOT_CHANGE_COMPARISONS{_thr_tag}.csv"
             )
         stat_summary_df.to_csv(stat_summary_csv, index=False)
         if len(image_medians_df) > 0:
@@ -1285,9 +1299,37 @@ if run_current or run_all:
             f"from {n_paired_images} image{'s' if n_paired_images != 1 else ''})"
         )
         paired_otsu_spot_change_df = dash_meta.get("paired_otsu_spot_change_df")
+        otsu_spot_count_matrix_df = dash_meta.get("otsu_spot_count_matrix_df")
+        otsu_spot_change_comparisons_df = dash_meta.get("otsu_spot_change_comparisons_df")
+        if otsu_spot_count_matrix_df is not None and len(otsu_spot_count_matrix_df) > 0:
+            present_otsu_spot_count_matrix(otsu_spot_count_matrix_df).to_csv(
+                otsu_spot_count_matrix_csv,
+                index=False,
+            )
+            st.success(f"Otsu spot-count matrix saved: `{otsu_spot_count_matrix_csv}`")
+        if otsu_spot_change_comparisons_df is not None and len(otsu_spot_change_comparisons_df) > 0:
+            present_otsu_spot_change_comparisons(otsu_spot_change_comparisons_df).to_csv(
+                otsu_spot_change_comparisons_csv,
+                index=False,
+            )
+            st.success(f"Otsu spot-change comparisons saved: `{otsu_spot_change_comparisons_csv}`")
         if paired_otsu_spot_change_df is not None:
             paired_otsu_spot_change_df.to_csv(paired_otsu_spot_change_csv, index=False)
-            st.success(f"Paired vs global Otsu spot-change table saved: `{paired_otsu_spot_change_csv}`")
+            st.success(
+                f"Legacy mixed Otsu spot-change table saved: `{paired_otsu_spot_change_csv}` "
+                "(global@all vs paired@paired-cohort)"
+            )
+        if otsu_spot_count_matrix_df is not None and len(otsu_spot_count_matrix_df) > 0:
+            st.markdown("#### Otsu spot-count sensitivity (2×2 factorial)")
+            st.caption(
+                "Each column counts spots at or above the stated Otsu threshold within the "
+                "stated image set (all images vs paired-cohort images with both early NMJ-like "
+                "and Orphaned spots)."
+            )
+            st.dataframe(present_otsu_spot_count_matrix(otsu_spot_count_matrix_df))
+        if otsu_spot_change_comparisons_df is not None and len(otsu_spot_change_comparisons_df) > 0:
+            st.markdown("#### Otsu spot-count comparisons")
+            st.dataframe(present_otsu_spot_change_comparisons(otsu_spot_change_comparisons_df))
         st.success(f"Statistical test summary saved: `{stat_summary_csv}`")
 
         global_otsu = dash_meta.get("global_btx_intensity_otsu")
@@ -1425,6 +1467,14 @@ if run_current or run_all:
             if paired_otsu_spot_change_csv and os.path.isfile(paired_otsu_spot_change_csv):
                 run_config["paired_otsu_spot_change_csv"] = os.path.relpath(
                     paired_otsu_spot_change_csv, run_dir
+                )
+            if otsu_spot_count_matrix_csv and os.path.isfile(otsu_spot_count_matrix_csv):
+                run_config["otsu_spot_count_matrix_csv"] = os.path.relpath(
+                    otsu_spot_count_matrix_csv, run_dir
+                )
+            if otsu_spot_change_comparisons_csv and os.path.isfile(otsu_spot_change_comparisons_csv):
+                run_config["otsu_spot_change_comparisons_csv"] = os.path.relpath(
+                    otsu_spot_change_comparisons_csv, run_dir
                 )
         except NameError:
             pass

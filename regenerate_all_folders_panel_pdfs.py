@@ -78,6 +78,8 @@ def main() -> int:
         ensure_roundness_column,
         normalize_btx_signal_classes,
         normalize_file_stats_columns,
+        present_otsu_spot_change_comparisons,
+        present_otsu_spot_count_matrix,
     )
 
     if not os.path.isfile(args.master_csv):
@@ -115,24 +117,44 @@ def main() -> int:
     written, errs = _export_figure_panels_to_pdfs(fig, panel_specs, stem)
     plt.close(fig)
 
-    spot_change_df = meta.get("paired_otsu_spot_change_df")
-    if spot_change_df is not None:
+    def _write_otsu_csv(meta_key, master_token, batch_token, fallback_name):
+        df = meta.get(meta_key)
+        if df is None:
+            return
+        if meta_key == "otsu_spot_count_matrix_df":
+            df = present_otsu_spot_count_matrix(df)
+        elif meta_key == "otsu_spot_change_comparisons_df":
+            df = present_otsu_spot_change_comparisons(df)
         master_ab = os.path.abspath(args.master_csv)
         master_base = os.path.basename(master_ab)
         master_stem, ext = os.path.splitext(master_ab)
         if "ALL_FOLDERS_MASTER_RESULTS" in master_base:
-            spot_change_csv = (
-                master_stem.replace("ALL_FOLDERS_MASTER_RESULTS", "ALL_FOLDERS_PAIRED_OTSU_SPOT_CHANGE")
-                + ext
-            )
+            out_csv = master_stem.replace("ALL_FOLDERS_MASTER_RESULTS", master_token) + ext
         elif "BATCH_MASTER_RESULTS" in master_base:
-            spot_change_csv = (
-                master_stem.replace("BATCH_MASTER_RESULTS", "BATCH_PAIRED_OTSU_SPOT_CHANGE") + ext
-            )
+            out_csv = master_stem.replace("BATCH_MASTER_RESULTS", batch_token) + ext
         else:
-            spot_change_csv = os.path.join(os.path.dirname(master_ab), "PAIRED_OTSU_SPOT_CHANGE.csv")
-        spot_change_df.to_csv(spot_change_csv, index=False)
-        print(f"Wrote paired Otsu spot-change CSV: {spot_change_csv}", file=sys.stderr)
+            out_csv = os.path.join(os.path.dirname(master_ab), fallback_name)
+        df.to_csv(out_csv, index=False)
+        print(f"Wrote {fallback_name}: {out_csv}", file=sys.stderr)
+
+    _write_otsu_csv(
+        "otsu_spot_count_matrix_df",
+        "ALL_FOLDERS_OTSU_SPOT_COUNT_MATRIX",
+        "BATCH_OTSU_SPOT_COUNT_MATRIX",
+        "OTSU_SPOT_COUNT_MATRIX.csv",
+    )
+    _write_otsu_csv(
+        "otsu_spot_change_comparisons_df",
+        "ALL_FOLDERS_OTSU_SPOT_CHANGE_COMPARISONS",
+        "BATCH_OTSU_SPOT_CHANGE_COMPARISONS",
+        "OTSU_SPOT_CHANGE_COMPARISONS.csv",
+    )
+    _write_otsu_csv(
+        "paired_otsu_spot_change_df",
+        "ALL_FOLDERS_PAIRED_OTSU_SPOT_CHANGE",
+        "BATCH_PAIRED_OTSU_SPOT_CHANGE",
+        "PAIRED_OTSU_SPOT_CHANGE.csv",
+    )
 
     print(f"Wrote dashboard PNG: {out_png}")
     if written:

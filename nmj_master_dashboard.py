@@ -1166,9 +1166,6 @@ def build_batch_stat_summary_dataframe(
         stat_df = pd.DataFrame(columns=list(STAT_SUMMARY_COLUMNS))
     else:
         stat_df = pd.DataFrame(rows, columns=list(STAT_SUMMARY_COLUMNS))
-    for col in ("statistic_value", "p_value", "p_value_adjusted"):
-        if col in stat_df.columns:
-            stat_df[col] = pd.to_numeric(stat_df[col], errors="coerce")
 
     global_otsu = dash_meta.get("global_btx_intensity_otsu") if dash_meta else None
     paired_spots_df = build_intensity_paired_comparison_spots_table(master_df, global_otsu=global_otsu)
@@ -1190,8 +1187,8 @@ def build_batch_stat_summary_dataframe(
             ),
             "statistic": "paired_minus_global_au",
             "statistic_value": otsu_cmp["delta_au"],
-            "p_value": "",
-            "p_value_adjusted": "",
+            "p_value": np.nan,
+            "p_value_adjusted": np.nan,
             "significance": "",
             "notes": (
                 f"global_otsu={otsu_cmp['global_otsu_au']:.1f} A.U.; "
@@ -1204,6 +1201,11 @@ def build_batch_stat_summary_dataframe(
             [stat_df, pd.DataFrame([cmp_row], columns=list(STAT_SUMMARY_COLUMNS))],
             ignore_index=True,
         )
+
+    for col in ("statistic_value", "p_value", "p_value_adjusted"):
+        if col in stat_df.columns:
+            stat_df[col] = pd.to_numeric(stat_df[col], errors="coerce")
+
     return stat_df, image_medians_df, otsu_dim_noise_df, paired_spots_df
 
 
@@ -1335,31 +1337,288 @@ def _count_spots_ge_otsu_for_class(sub, otsu):
     return n_total, n_ge
 
 
-def build_paired_otsu_spot_change_by_class_table(master_df, paired_df, global_otsu, paired_otsu):
-    """Per-class spot counts above global vs paired Otsu.
+def _format_spots_ge_fraction(n_ge, n_total):
+    return f"{n_ge} / {n_total}"
 
-    Global columns use all spots (master_df); paired columns use the paired-cohort subset only.
+
+OTSU_SPOT_COUNT_MATRIX_COLUMNS = (
+    "BTX signal class",
+    "global_otsu_au",
+    "paired_otsu_au",
+    "n_spots_all_images",
+    "n_spots_paired_cohort",
+    "n_ge_global_otsu_all_images",
+    "n_ge_paired_otsu_all_images",
+    "n_ge_global_otsu_paired_cohort",
+    "n_ge_paired_otsu_paired_cohort",
+    "spots_ge_global_otsu_all_images",
+    "spots_ge_paired_otsu_all_images",
+    "spots_ge_global_otsu_paired_cohort",
+    "spots_ge_paired_otsu_paired_cohort",
+)
+
+OTSU_MATRIX_CELL_KEYS = (
+    "spots_ge_global_otsu_all_images",
+    "spots_ge_paired_otsu_all_images",
+    "spots_ge_global_otsu_paired_cohort",
+    "spots_ge_paired_otsu_paired_cohort",
+)
+
+OTSU_MATRIX_CELL_LABELS = {
+    "spots_ge_global_otsu_all_images": "≥ Global Otsu, all images",
+    "spots_ge_paired_otsu_all_images": "≥ Paired Otsu, all images",
+    "spots_ge_global_otsu_paired_cohort": "≥ Global Otsu, paired-cohort images",
+    "spots_ge_paired_otsu_paired_cohort": "≥ Paired Otsu, paired-cohort images",
+}
+
+OTSU_MATRIX_DISPLAY_COLUMN_MAP = {
+    "BTX signal class": "BTX signal class",
+    "global_otsu_au": "Global Otsu (A.U.)",
+    "paired_otsu_au": "Paired Otsu (A.U.)",
+    "n_spots_all_images": "Spots, all images",
+    "n_spots_paired_cohort": "Spots, paired-cohort images",
+    **OTSU_MATRIX_CELL_LABELS,
+}
+
+OTSU_MATRIX_DISPLAY_COLUMNS = (
+    "BTX signal class",
+    "global_otsu_au",
+    "paired_otsu_au",
+    "n_spots_all_images",
+    "n_spots_paired_cohort",
+    *OTSU_MATRIX_CELL_KEYS,
+)
+
+
+def present_otsu_spot_count_matrix(matrix_df):
+    """Return a copy with human-readable column labels for CSV/UI."""
+    if matrix_df is None or len(matrix_df) == 0:
+        return pd.DataFrame(columns=[OTSU_MATRIX_DISPLAY_COLUMN_MAP[c] for c in OTSU_MATRIX_DISPLAY_COLUMNS])
+    cols = [c for c in OTSU_MATRIX_DISPLAY_COLUMNS if c in matrix_df.columns]
+    return matrix_df.loc[:, cols].rename(columns=OTSU_MATRIX_DISPLAY_COLUMN_MAP)
+
+
+def _otsu_matrix_cell_header_label(cell_key):
+    return OTSU_MATRIX_CELL_LABELS[cell_key].replace(", ", ",\n")
+
+
+def build_otsu_spot_count_matrix_by_class(master_df, paired_df, global_otsu, paired_otsu):
+    """2×2 factorial: {global, paired} Otsu × {all images, paired-cohort images}.
+
+    Use derived comparison tables to separate threshold effects from cohort-size effects.
     """
     master_df = normalize_btx_signal_classes(master_df)
     paired_df = normalize_btx_signal_classes(paired_df)
-    rows = []
     global_otsu = float(global_otsu) if global_otsu is not None and np.isfinite(global_otsu) else np.nan
     paired_otsu = float(paired_otsu) if paired_otsu is not None and np.isfinite(paired_otsu) else np.nan
+    rows = []
     for btx_class in BTX_SIGNAL_CLASS_ORDER:
         sub_all = master_df[master_df["BTX signal class"] == btx_class]
         sub_paired = paired_df[paired_df["BTX signal class"] == btx_class]
-        n_total_all, n_global = _count_spots_ge_otsu_for_class(sub_all, global_otsu)
-        n_total_paired, n_paired = _count_spots_ge_otsu_for_class(sub_paired, paired_otsu)
+        n_all, n_g_all = _count_spots_ge_otsu_for_class(sub_all, global_otsu)
+        _, n_p_all = _count_spots_ge_otsu_for_class(sub_all, paired_otsu)
+        n_paired, n_g_paired = _count_spots_ge_otsu_for_class(sub_paired, global_otsu)
+        _, n_p_paired = _count_spots_ge_otsu_for_class(sub_paired, paired_otsu)
         rows.append(
             {
                 "BTX signal class": btx_class,
-                "n_spots_total": n_total_all,
-                "n_spots_ge_global_otsu": n_global,
-                "n_spots_ge_paired_otsu": n_paired,
-                "spots_ge_global": f"{n_global} / {n_total_all}",
-                "spots_ge_paired": f"{n_paired} / {n_total_paired}",
                 "global_otsu_au": global_otsu,
                 "paired_otsu_au": paired_otsu,
+                "n_spots_all_images": n_all,
+                "n_spots_paired_cohort": n_paired,
+                "n_ge_global_otsu_all_images": n_g_all,
+                "n_ge_paired_otsu_all_images": n_p_all,
+                "n_ge_global_otsu_paired_cohort": n_g_paired,
+                "n_ge_paired_otsu_paired_cohort": n_p_paired,
+                "spots_ge_global_otsu_all_images": _format_spots_ge_fraction(n_g_all, n_all),
+                "spots_ge_paired_otsu_all_images": _format_spots_ge_fraction(n_p_all, n_all),
+                "spots_ge_global_otsu_paired_cohort": _format_spots_ge_fraction(n_g_paired, n_paired),
+                "spots_ge_paired_otsu_paired_cohort": _format_spots_ge_fraction(n_p_paired, n_paired),
+            }
+        )
+    return pd.DataFrame(rows, columns=list(OTSU_SPOT_COUNT_MATRIX_COLUMNS))
+
+
+OTSU_SPOT_CHANGE_COMPARISON_SPECS = (
+    {
+        "comparison_id": "mixed_cohort",
+        "comparison_label": "Global Otsu on all images vs paired Otsu on paired-cohort images",
+        "left_label": "≥ Global Otsu, all images",
+        "right_label": "≥ Paired Otsu, paired-cohort images",
+        "left_col": "n_ge_global_otsu_all_images",
+        "right_col": "n_ge_paired_otsu_paired_cohort",
+        "n_total_left_col": "n_spots_all_images",
+        "n_total_right_col": "n_spots_paired_cohort",
+        "otsu_left_au_col": "global_otsu_au",
+        "otsu_right_au_col": "paired_otsu_au",
+    },
+    {
+        "comparison_id": "threshold_on_all_images",
+        "comparison_label": "Global Otsu vs paired Otsu (both applied to all images)",
+        "left_label": "≥ Global Otsu, all images",
+        "right_label": "≥ Paired Otsu, all images",
+        "left_col": "n_ge_global_otsu_all_images",
+        "right_col": "n_ge_paired_otsu_all_images",
+        "n_total_left_col": "n_spots_all_images",
+        "n_total_right_col": "n_spots_all_images",
+        "otsu_left_au_col": "global_otsu_au",
+        "otsu_right_au_col": "paired_otsu_au",
+    },
+    {
+        "comparison_id": "paired_threshold_population",
+        "comparison_label": "Paired Otsu on all images vs paired Otsu on paired-cohort images",
+        "left_label": "≥ Paired Otsu, all images",
+        "right_label": "≥ Paired Otsu, paired-cohort images",
+        "left_col": "n_ge_paired_otsu_all_images",
+        "right_col": "n_ge_paired_otsu_paired_cohort",
+        "n_total_left_col": "n_spots_all_images",
+        "n_total_right_col": "n_spots_paired_cohort",
+        "otsu_left_au_col": "paired_otsu_au",
+        "otsu_right_au_col": "paired_otsu_au",
+    },
+    {
+        "comparison_id": "global_threshold_population",
+        "comparison_label": "Global Otsu on all images vs global Otsu on paired-cohort images",
+        "left_label": "≥ Global Otsu, all images",
+        "right_label": "≥ Global Otsu, paired-cohort images",
+        "left_col": "n_ge_global_otsu_all_images",
+        "right_col": "n_ge_global_otsu_paired_cohort",
+        "n_total_left_col": "n_spots_all_images",
+        "n_total_right_col": "n_spots_paired_cohort",
+        "otsu_left_au_col": "global_otsu_au",
+        "otsu_right_au_col": "global_otsu_au",
+    },
+    {
+        "comparison_id": "threshold_in_paired_cohort",
+        "comparison_label": "Global Otsu vs paired Otsu (both applied to paired-cohort images)",
+        "left_label": "≥ Global Otsu, paired-cohort images",
+        "right_label": "≥ Paired Otsu, paired-cohort images",
+        "left_col": "n_ge_global_otsu_paired_cohort",
+        "right_col": "n_ge_paired_otsu_paired_cohort",
+        "n_total_left_col": "n_spots_paired_cohort",
+        "n_total_right_col": "n_spots_paired_cohort",
+        "otsu_left_au_col": "global_otsu_au",
+        "otsu_right_au_col": "paired_otsu_au",
+    },
+)
+
+
+OTSU_SPOT_CHANGE_COMPARISONS_COLUMNS = (
+    "comparison_id",
+    "comparison_label",
+    "left_label",
+    "right_label",
+    "BTX signal class",
+    "otsu_left_au",
+    "otsu_right_au",
+    "n_ge_left",
+    "n_ge_right",
+    "n_total_left",
+    "n_total_right",
+    "spots_ge_left",
+    "spots_ge_right",
+    "delta_n_ge",
+    "delta_pct_ge",
+)
+
+
+def build_otsu_spot_change_comparisons_table(matrix_df):
+    """Pairwise spot-count comparisons derived from the 2×2 Otsu matrix."""
+    if matrix_df is None or len(matrix_df) == 0:
+        return pd.DataFrame(columns=list(OTSU_SPOT_CHANGE_COMPARISONS_COLUMNS))
+    rows = []
+    for spec in OTSU_SPOT_CHANGE_COMPARISON_SPECS:
+        for _, row in matrix_df.iterrows():
+            n_left = int(row[spec["left_col"]])
+            n_right = int(row[spec["right_col"]])
+            n_total_left = int(row[spec["n_total_left_col"]])
+            n_total_right = int(row[spec["n_total_right_col"]])
+            delta = n_right - n_left
+            delta_pct = (100.0 * delta / n_left) if n_left > 0 else np.nan
+            rows.append(
+                {
+                    "comparison_id": spec["comparison_id"],
+                    "comparison_label": spec["comparison_label"],
+                    "left_label": spec["left_label"],
+                    "right_label": spec["right_label"],
+                    "BTX signal class": row["BTX signal class"],
+                    "otsu_left_au": row[spec["otsu_left_au_col"]],
+                    "otsu_right_au": row[spec["otsu_right_au_col"]],
+                    "n_ge_left": n_left,
+                    "n_ge_right": n_right,
+                    "n_total_left": n_total_left,
+                    "n_total_right": n_total_right,
+                    "spots_ge_left": _format_spots_ge_fraction(n_left, n_total_left),
+                    "spots_ge_right": _format_spots_ge_fraction(n_right, n_total_right),
+                    "delta_n_ge": delta,
+                    "delta_pct_ge": delta_pct,
+                }
+            )
+    return pd.DataFrame(rows, columns=list(OTSU_SPOT_CHANGE_COMPARISONS_COLUMNS))
+
+
+def present_otsu_spot_change_comparisons(comparisons_df):
+    """Return comparisons with clearer left/right column names in spots_ge_* fields."""
+    if comparisons_df is None or len(comparisons_df) == 0:
+        return pd.DataFrame(columns=list(OTSU_SPOT_CHANGE_COMPARISONS_COLUMNS))
+    out = comparisons_df.copy()
+    if "left_label" in out.columns and "spots_ge_left" in out.columns:
+        out["spots_ge_left"] = [
+            f"{left} ({frac})"
+            for left, frac in zip(out["left_label"], out["spots_ge_left"], strict=True)
+        ]
+    if "right_label" in out.columns and "spots_ge_right" in out.columns:
+        out["spots_ge_right"] = [
+            f"{right} ({frac})"
+            for right, frac in zip(out["right_label"], out["spots_ge_right"], strict=True)
+        ]
+    return out
+
+
+def build_otsu_spot_sensitivity_tables(master_df, paired_df=None, *, global_otsu=None, paired_otsu=None):
+    """Build Otsu spot-count matrix and derived comparison tables."""
+    master_df = normalize_btx_signal_classes(master_df)
+    if paired_df is None:
+        paired_table = build_intensity_paired_comparison_images_table(master_df)
+        paired_df = filter_master_df_to_intensity_paired_images(master_df, paired_table)
+    if global_otsu is None or not np.isfinite(global_otsu):
+        if len(master_df) > 0 and "MEAN_INTENSITY" in master_df.columns:
+            global_otsu = global_btx_intensity_otsu_threshold(master_df["MEAN_INTENSITY"])
+        else:
+            global_otsu = np.nan
+    if paired_otsu is None or not np.isfinite(paired_otsu):
+        if len(paired_df) > 0 and "MEAN_INTENSITY" in paired_df.columns:
+            paired_otsu = global_btx_intensity_otsu_threshold(paired_df["MEAN_INTENSITY"])
+        else:
+            paired_otsu = np.nan
+    matrix_df = build_otsu_spot_count_matrix_by_class(master_df, paired_df, global_otsu, paired_otsu)
+    comparisons_df = build_otsu_spot_change_comparisons_table(matrix_df)
+    legacy_df = build_paired_otsu_spot_change_by_class_table(
+        master_df, paired_df, global_otsu, paired_otsu, matrix_df=matrix_df
+    )
+    return matrix_df, comparisons_df, legacy_df
+
+
+def build_paired_otsu_spot_change_by_class_table(
+    master_df, paired_df, global_otsu, paired_otsu, *, matrix_df=None
+):
+    """Legacy mixed comparison: global Otsu on all images vs paired Otsu on paired cohort."""
+    if matrix_df is None:
+        matrix_df = build_otsu_spot_count_matrix_by_class(
+            master_df, paired_df, global_otsu, paired_otsu
+        )
+    rows = []
+    for _, row in matrix_df.iterrows():
+        rows.append(
+            {
+                "BTX signal class": row["BTX signal class"],
+                "n_spots_total": row["n_spots_all_images"],
+                "n_spots_ge_global_otsu": row["n_ge_global_otsu_all_images"],
+                "n_spots_ge_paired_otsu": row["n_ge_paired_otsu_paired_cohort"],
+                "≥ Global Otsu, all images": row["spots_ge_global_otsu_all_images"],
+                "≥ Paired Otsu, paired-cohort images": row["spots_ge_paired_otsu_paired_cohort"],
+                "global_otsu_au": row["global_otsu_au"],
+                "paired_otsu_au": row["paired_otsu_au"],
             }
         )
     return pd.DataFrame(rows, columns=list(PAIRED_OTSU_SPOT_CHANGE_COLUMNS))
@@ -1370,8 +1629,8 @@ PAIRED_OTSU_SPOT_CHANGE_COLUMNS = (
     "n_spots_total",
     "n_spots_ge_global_otsu",
     "n_spots_ge_paired_otsu",
-    "spots_ge_global",
-    "spots_ge_paired",
+    "≥ Global Otsu, all images",
+    "≥ Paired Otsu, paired-cohort images",
     "global_otsu_au",
     "paired_otsu_au",
 )
@@ -1475,35 +1734,37 @@ def _draw_intensity_class_histograms_on_axes(class_axes, master_df, *, otsu_th, 
             ax.set_xlim(*xlim)
 
 
-def _draw_paired_otsu_spot_change_table(ax, table_df, *, global_otsu, paired_otsu):
+def _draw_paired_otsu_spot_change_table(ax, matrix_df, *, global_otsu, paired_otsu):
     ax.axis("off")
     g_label = f"{global_otsu:.0f}" if global_otsu is not None and np.isfinite(global_otsu) else "n/a"
     p_label = f"{paired_otsu:.0f}" if paired_otsu is not None and np.isfinite(paired_otsu) else "n/a"
     title = (
-        "Paired cohort — spots above Otsu by class\n"
-        f"(global {g_label} A.U. vs paired {p_label} A.U.)"
+        "Spots above Otsu by class\n"
+        f"(Global Otsu = {g_label} A.U.; Paired Otsu = {p_label} A.U.)"
     )
-    if table_df is None or len(table_df) == 0:
+    if matrix_df is None or len(matrix_df) == 0:
         ax.text(0.5, 0.5, "No paired-cohort data", ha="center", va="center")
         ax.set_title(title, fontsize=9)
         return
 
-    headers = ["Class", f"Spots ≥ global ({g_label})", f"Spots ≥ paired ({p_label})"]
-    cell_text = [
-        [row["BTX signal class"], row["spots_ge_global"], row["spots_ge_paired"]]
-        for _, row in table_df.iterrows()
+    headers = ["BTX signal class"] + [
+        _otsu_matrix_cell_header_label(key) for key in OTSU_MATRIX_CELL_KEYS
     ]
-    ax.set_title(title, fontsize=9, pad=4, loc="left", x=0.03)
+    cell_text = [
+        [row["BTX signal class"]] + [row[key] for key in OTSU_MATRIX_CELL_KEYS]
+        for _, row in matrix_df.iterrows()
+    ]
+    ax.set_title(title, fontsize=8.5, pad=4, loc="left", x=0.03)
     table = ax.table(
         cellText=cell_text,
         colLabels=headers,
         loc="upper center",
         cellLoc="center",
-        bbox=[0.02, 0.04, 0.96, 0.68],
+        bbox=[0.01, 0.02, 0.98, 0.72],
     )
     table.auto_set_font_size(False)
-    table.set_fontsize(8.5)
-    table.scale(1.0, 1.22)
+    table.set_fontsize(6.8)
+    table.scale(1.0, 1.2)
     for (row_idx, col_idx), cell in table.get_celld().items():
         if row_idx == 0:
             cell.set_text_props(weight="bold")
@@ -1554,8 +1815,8 @@ def add_global_btx_intensity_histogram_with_otsu_row(fig, outer, row_idx, master
     else:
         paired_otsu_th = np.nan
 
-    spot_change_df = build_paired_otsu_spot_change_by_class_table(
-        master_df, paired_master, otsu_th, paired_otsu_th
+    otsu_matrix_df, otsu_comparisons_df, spot_change_df = build_otsu_spot_sensitivity_tables(
+        master_df, paired_master, global_otsu=otsu_th, paired_otsu=paired_otsu_th
     )
 
     title_prefix = f"{panel_num}. " if panel_num is not None else ""
@@ -1601,12 +1862,14 @@ def add_global_btx_intensity_histogram_with_otsu_row(fig, outer, row_idx, master
     )
     _draw_paired_otsu_spot_change_table(
         ax_spot_change,
-        spot_change_df,
+        otsu_matrix_df,
         global_otsu=otsu_th,
         paired_otsu=paired_otsu_th,
     )
 
     intensity_row_meta = {
+        "otsu_spot_count_matrix_df": otsu_matrix_df,
+        "otsu_spot_change_comparisons_df": otsu_comparisons_df,
         "paired_otsu_spot_change_df": spot_change_df,
         "paired_btx_intensity_otsu": float(paired_otsu_th) if np.isfinite(paired_otsu_th) else None,
     }
@@ -2668,6 +2931,8 @@ def build_aggregate_batch_dashboard_figure(master_df, distance_threshold_um, *, 
         "global_btx_intensity_otsu": float(global_otsu_th) if np.isfinite(global_otsu_th) else None,
         "paired_btx_intensity_otsu": intensity_row_meta.get("paired_btx_intensity_otsu"),
         "paired_intensity_images_df": paired_intensity_images_df,
+        "otsu_spot_count_matrix_df": intensity_row_meta.get("otsu_spot_count_matrix_df"),
+        "otsu_spot_change_comparisons_df": intensity_row_meta.get("otsu_spot_change_comparisons_df"),
         "paired_otsu_spot_change_df": intensity_row_meta.get("paired_otsu_spot_change_df"),
     }
     return fig, panel_specs, meta
