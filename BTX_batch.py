@@ -18,7 +18,6 @@ from nmj_master_dashboard import (
     BTX_CLASS_ORPHANED,
     BTX_SIGNAL_CLASS_ORDER,
     BTX_SIGNAL_CLASS_PALETTE,
-    BTX_SIGNAL_CLASS_LEGACY_ALIASES,
     DENSITY_COL_EARLY_NMJ,
     DENSITY_COL_MUSCLE,
     DENSITY_COL_NEURON,
@@ -43,13 +42,11 @@ from nmj_master_dashboard import (
     draw_proximity_joint,
     tissue_mask_verification_side_by_side,
     tissue_mask_verification_title,
-    save_all_folders_summary_png,
     _export_figure_panels_to_pdfs,
     build_aggregate_batch_dashboard_figure,
     build_batch_stat_summary_dataframe,
     present_otsu_spot_count_matrix,
     present_otsu_spot_change_comparisons,
-    SUPPORTED_EXTENSIONS,
     collect_image_jobs,
     get_confocal_metadata,
     load_confocal_image,
@@ -112,7 +109,6 @@ def sync_selected_folder_channel_mapping(folder_rel, folder_path, czi_files):
 
 # Each subdirectory under this path is one dataset folder (contains `.czi` files).
 DATA_ROOT = "data"
-base_dir = DATA_ROOT  # legacy alias used in older batch paths
 
 # DoG ``blob_dog`` sigma_ratio: **Auto threshold sensitivity** radio (auto) or manual number input (default = Conservative).
 DOG_SIGMA_RATIO_CONSERVATIVE = 1.6
@@ -209,7 +205,7 @@ file_configs = {}
 if len(czi_files) > 0:
     first_czi = czi_files[0]
     path_tmp = os.path.join(folder_path, first_czi)
-    n_ch_global, px_size_global = fast_czi_meta(path_tmp)
+    n_ch_global, _ = fast_czi_meta(path_tmp)
     options_global = [f"Channel {i+1}" for i in range(n_ch_global)]
     
     st.markdown("### 📋 Config Template")
@@ -302,17 +298,6 @@ def compute_sigma_bounds_px(min_sigma_um, max_sigma_um, pixel_size_um, image_sha
         return None, None, sigma_cap
     max_px = min(max_px, sigma_cap)
     return min_px, max_px, sigma_cap
-
-
-def compute_bg_radius_px(bg_radius_um, pixel_size_um, image_shape):
-    """Convert physical background radius to a bounded morphological kernel size."""
-    pixel_size_safe = max(float(pixel_size_um), 1e-9)
-    radius_px_raw = float(bg_radius_um) / pixel_size_safe
-    h, w = image_shape[:2]
-    radius_cap = max(3.0, min(96.0, min(h, w) / 16.0))
-    radius_px = int(max(1, min(round(radius_px_raw), radius_cap)))
-    clipped = radius_px_raw > radius_cap
-    return radius_px, clipped, radius_cap
 
 
 def remove_muscle_haze(img, pixel_size_um, bg_sigma_um):
@@ -714,8 +699,6 @@ if run_current or run_all:
             
             # --- Extract Spot Distances & Morphological Shape ---
             spots_data = []
-            distances_m = []
-            distances_n = []
             
             for index, blob in enumerate(blobs):
                 y, x, r = blob
@@ -731,9 +714,6 @@ if run_current or run_all:
                 d_m_um = max(0.0, d_m_center - r_um)
                 d_n_um = max(0.0, d_n_center - r_um)
 
-                distances_m.append(d_m_um)
-                distances_n.append(d_n_um)
-                
                 # --- Morphological & Biological Metrics ---
                 roundness = np.nan
                 area_px_spot = np.nan

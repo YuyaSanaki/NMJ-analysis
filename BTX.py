@@ -16,7 +16,6 @@ from nmj_master_dashboard import (
     BTX_CLASS_ORPHANED,
     BTX_SIGNAL_CLASS_ORDER,
     BTX_SIGNAL_CLASS_PALETTE,
-    BTX_SIGNAL_CLASS_LEGACY_ALIASES,
     MIN_PIXELS_FOR_SHAPE,
     RESOLUTION_CLASS_LOWRES_UM_PER_PIXEL,
     ROUNDNESS_KRUSKAL_CLASSES,
@@ -274,17 +273,6 @@ def compute_sigma_bounds_px(min_sigma_um, max_sigma_um, pixel_size_um, image_sha
         return None, None, sigma_cap
     max_px = min(max_px, sigma_cap)
     return min_px, max_px, sigma_cap
-
-
-def compute_bg_radius_px(bg_radius_um, pixel_size_um, image_shape):
-    """Convert physical background radius to a bounded morphological kernel size."""
-    pixel_size_safe = max(float(pixel_size_um), 1e-9)
-    radius_px_raw = float(bg_radius_um) / pixel_size_safe
-    h, w = image_shape[:2]
-    radius_cap = max(3.0, min(96.0, min(h, w) / 16.0))
-    radius_px = int(max(1, min(round(radius_px_raw), radius_cap)))
-    clipped = radius_px_raw > radius_cap
-    return radius_px, clipped, radius_cap
 
 
 def remove_muscle_haze(img, pixel_size_um, bg_sigma_um):
@@ -635,8 +623,6 @@ if st.button("🚀 Process Pipeline", type="primary"):
             
             # --- Extract Spot Distances & Morphological Shape ---
             spots_data = []
-            distances_m = []
-            distances_n = []
             
             for index, blob in enumerate(blobs):
                 y, x, r = blob
@@ -652,9 +638,6 @@ if st.button("🚀 Process Pipeline", type="primary"):
                 d_m_um = max(0.0, d_m_center - r_um)
                 d_n_um = max(0.0, d_n_center - r_um)
 
-                distances_m.append(d_m_um)
-                distances_n.append(d_n_um)
-                
                 # --- Morphological & Biological Metrics ---
                 roundness = np.nan
                 area_px_spot = np.nan
