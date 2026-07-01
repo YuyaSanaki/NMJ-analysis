@@ -26,8 +26,9 @@ from nmj_master_dashboard import (
     get_confocal_metadata,
     load_confocal_image,
     total_image_area_um2_from_metadata,
-    get_proximity_analysis_title,
     proximity_analysis_results,
+    proximity_joint_axes,
+    draw_proximity_joint,
     tissue_mask_verification_side_by_side,
     tissue_mask_verification_title,
 )
@@ -59,175 +60,6 @@ def format_auto_thr_sensitivity_label(mode: str) -> str:
     if mode == "High":
         return f"High ({DOG_SIGMA_RATIO_HIGH:g})"
     return f"Conservative ({DOG_SIGMA_RATIO_CONSERVATIVE:g})"
-
-
-def proximity_joint_axes(fig, outer_cell, hspace=0.08, wspace=0.08, title_first=False):
-    """Proximity scatter + marginal KDEs. If title_first, top row is for the panel title (axes off), then x-KDE, then main+y-KDE."""
-    if title_first:
-        inner = outer_cell.subgridspec(
-            3, 2, height_ratios=[0.28, 1, 4], width_ratios=[4, 1], hspace=hspace, wspace=wspace
-        )
-        ax_title = fig.add_subplot(inner[0, :])
-        ax_title.axis("off")
-        ax_kde_x = fig.add_subplot(inner[1, 0])
-        ax_corner = fig.add_subplot(inner[1, 1])
-        ax_corner.axis("off")
-        ax_main = fig.add_subplot(inner[2, 0], sharex=ax_kde_x)
-        ax_kde_y = fig.add_subplot(inner[2, 1], sharey=ax_main)
-        ax_kde_x.tick_params(labelbottom=False)
-        ax_kde_y.tick_params(labelleft=False)
-        return ax_main, ax_kde_x, ax_kde_y, ax_title
-    inner = outer_cell.subgridspec(
-        2, 2, height_ratios=[1, 4], width_ratios=[4, 1], hspace=hspace, wspace=wspace
-    )
-    ax_kde_x = fig.add_subplot(inner[0, 0])
-    ax_corner = fig.add_subplot(inner[0, 1])
-    ax_corner.axis("off")
-    ax_main = fig.add_subplot(inner[1, 0], sharex=ax_kde_x)
-    ax_kde_y = fig.add_subplot(inner[1, 1], sharey=ax_main)
-    ax_kde_x.tick_params(labelbottom=False)
-    ax_kde_y.tick_params(labelleft=False)
-    return ax_main, ax_kde_x, ax_kde_y
-
-
-def _scatter_dataframe_with_clip_jitter(df, sigma_um=0.02, seed=42):
-    """Return a copy of df with tiny deterministic jitter applied ONLY to rows where
-    ``Dist_to_Muscle_um`` or ``Dist_to_Neuron_um`` were clipped to 0.
-
-    The clipping in :func:`max(0.0, d_center - r_um)` collapses every spot whose
-    center lies inside (or near) an EDT mask onto the same scatter coordinate, so a
-    naive ``sns.scatterplot`` renders many overlapping NMJs / clusters as a single
-    marker. This jitter only nudges the displayed coordinate (the source ``df`` is
-    untouched and the marginal KDEs continue to use the true distances).
-    """
-    if df is None or len(df) == 0:
-        return df
-    if "Dist_to_Muscle_um" not in df.columns or "Dist_to_Neuron_um" not in df.columns:
-        return df
-    rng = np.random.default_rng(seed)
-    out = df.copy()
-    n = len(out)
-    jx = np.abs(rng.normal(0.0, sigma_um, size=n))
-    jy = np.abs(rng.normal(0.0, sigma_um, size=n))
-    mx = out["Dist_to_Muscle_um"].to_numpy(copy=True).astype(float)
-    my = out["Dist_to_Neuron_um"].to_numpy(copy=True).astype(float)
-    clipped_x = mx <= 1e-9
-    clipped_y = my <= 1e-9
-    mx[clipped_x] = mx[clipped_x] + jx[clipped_x]
-    my[clipped_y] = my[clipped_y] + jy[clipped_y]
-    out["Dist_to_Muscle_um"] = mx
-    out["Dist_to_Neuron_um"] = my
-    return out
-
-
-def draw_proximity_joint(
-    ax_main,
-    ax_kde_x,
-    ax_kde_y,
-    df,
-    distance_threshold_um,
-    title,
-    *,
-    marginal_alpha=0.35,
-    scatter_alpha=0.65,
-    scatter_size=None,
-    marginal_combined_black=False,
-    title_ax=None,
-):
-    """Scatter with marginal KDEs on muscle (top) and neuron (right). Optionally one black KDE over all spots."""
-    if df is not None and len(df) > 0:
-        if marginal_combined_black:
-            sns.kdeplot(
-                data=df,
-                x="Dist_to_Muscle_um",
-                ax=ax_kde_x,
-                color="black",
-                fill=True,
-                alpha=marginal_alpha,
-                warn_singular=False,
-            )
-            sns.kdeplot(
-                data=df,
-                y="Dist_to_Neuron_um",
-                ax=ax_kde_y,
-                color="black",
-                fill=True,
-                alpha=marginal_alpha,
-                warn_singular=False,
-            )
-        else:
-            sns.kdeplot(
-                data=df,
-                x="Dist_to_Muscle_um",
-                hue="BTX signal class",
-                hue_order=BTX_SIGNAL_CLASS_ORDER,
-                palette=BTX_SIGNAL_CLASS_PALETTE,
-                ax=ax_kde_x,
-                common_norm=False,
-                fill=True,
-                alpha=marginal_alpha,
-                legend=False,
-                warn_singular=False,
-            )
-            sns.kdeplot(
-                data=df,
-                y="Dist_to_Neuron_um",
-                hue="BTX signal class",
-                hue_order=BTX_SIGNAL_CLASS_ORDER,
-                palette=BTX_SIGNAL_CLASS_PALETTE,
-                ax=ax_kde_y,
-                common_norm=False,
-                fill=True,
-                alpha=marginal_alpha,
-                legend=False,
-                warn_singular=False,
-            )
-    df_scatter = _scatter_dataframe_with_clip_jitter(df)
-    scatter_kw = dict(
-        data=df_scatter,
-        x="Dist_to_Muscle_um",
-        y="Dist_to_Neuron_um",
-        hue="BTX signal class",
-        hue_order=BTX_SIGNAL_CLASS_ORDER,
-        palette=BTX_SIGNAL_CLASS_PALETTE,
-        ax=ax_main,
-    )
-    if scatter_size is not None:
-        scatter_kw["s"] = scatter_size
-        scatter_kw["alpha"] = scatter_alpha
-    else:
-        # Default per-image plots had no alpha, so multiple spots stacked at the same
-        # clipped (0,0) coordinate rendered as a single marker — visually under-counting
-        # vs. the yellow-circle overlay panels even though the data was complete.
-        scatter_kw["alpha"] = 0.7
-    sns.scatterplot(**scatter_kw)
-    ax_main.axvline(x=distance_threshold_um, color="black", linestyle="--")
-    ax_main.axhline(y=distance_threshold_um, color="black", linestyle="--")
-    n_spots = int(len(df)) if df is not None else 0
-    full_title = get_proximity_analysis_title(
-        df, label_base=title, n_spots=n_spots, primary_image_level=False
-    )
-    if title_ax is not None:
-        title_ax.clear()
-        title_ax.axis("off")
-        title_ax.text(
-            0.5,
-            0.5,
-            full_title,
-            transform=title_ax.transAxes,
-            ha="center",
-            va="center",
-            fontsize=11,
-        )
-        ax_main.set_title("")
-    else:
-        ax_main.set_title(full_title)
-    ax_main.set_xlabel("Distance to Muscle — spot edge (μm)")
-    ax_main.set_ylabel("Distance to Neuron — spot edge (μm)")
-    ax_kde_x.set_xlabel("")
-    ax_kde_x.set_ylabel("Density")
-    ax_kde_y.set_ylabel("")
-    ax_kde_y.set_xlabel("Density")
 
 
 st.set_page_config(page_title="NMJ Pipeline", layout="wide")
@@ -600,7 +432,7 @@ if st.button("🚀 Process Pipeline", type="primary"):
                 st.error("No spots found! Try lowering the Detection Threshold.")
                 st.stop()
             
-            st.success(f"TrackMate Replacement: Detected {total_spots} Spots!")
+            st.success(f"Detected {total_spots} BTX spots.")
 
             # --- Auto EDT Generation ---
             st.info("Generating Auto Distance Maps (EDT)...")
@@ -833,7 +665,6 @@ if st.button("🚀 Process Pipeline", type="primary"):
             ax_unused = fig.add_subplot(outer[3, 2])
             
             
-            # Graph 6: Roundness KDE (≥MIN pixels; NMJ / Aneural / Neuron-associated only — matches batch logic)
             _roundness_order = list(ROUNDNESS_KRUSKAL_CLASSES)
             df_shape = dataframe_for_roundness_kde_and_kruskal(df_spots)
             if len(df_shape) > 0:
@@ -854,7 +685,6 @@ if st.button("🚀 Process Pipeline", type="primary"):
             ax_circ_kde.set_ylabel('Probability Density')
             ax_circ_kde.set_xlim(0, 1)
             
-            # Graph 7: Size KDE
             if len(df_spots) > 0:
                 sns.kdeplot(
                     data=df_spots, x='RADIUS', hue='BTX signal class',
@@ -866,7 +696,6 @@ if st.button("🚀 Process Pipeline", type="primary"):
             ax_size_kde.set_xlabel('Radius (μm)')
             ax_size_kde.set_ylabel('Probability Density')
             
-            # Graph 8: NMJ Innervation Histogram (Bar Graph)
             if len(df_spots) > 0:
                 sns.histplot(
                     data=df_spots, x='INNERVATION_OVERLAP_PCT', hue='BTX signal class',
@@ -878,7 +707,6 @@ if st.button("🚀 Process Pipeline", type="primary"):
             ax_overlap_kde.set_xlabel(f'{BTX_CLASS_EARLY_NMJ} Innervation (%)')
             ax_overlap_kde.set_ylabel('Count')
             
-            # Graph 9: Mean Intensity KDE
             if len(df_spots) > 0:
                 sns.kdeplot(
                     data=df_spots, x='MEAN_INTENSITY', hue='BTX signal class',
@@ -890,7 +718,6 @@ if st.button("🚀 Process Pipeline", type="primary"):
             ax_intensity_kde.set_xlabel('Mean Fluorescence Intensity')
             ax_intensity_kde.set_ylabel('Probability Density')
             
-            # Graph 1: Scatter NMJ + marginal KDEs
             draw_proximity_joint(
                 ax_scatter,
                 ax_prox_kde_x,
@@ -902,7 +729,6 @@ if st.button("🚀 Process Pipeline", type="primary"):
                 title_ax=ax_prox_title,
             )
 
-            # Graph 2: Raw and cleaned BTX shown side-by-side for subtraction verification
             ax_btx_clean.imshow(raw_clean_side_by_side, cmap='gray', vmin=0.0, vmax=1.0)
             pane_w = img_btx_raw_vis.shape[1]
             ax_btx_clean.axvline(x=pane_w - 0.5, color='yellow', linewidth=2.5)
@@ -913,17 +739,14 @@ if st.button("🚀 Process Pipeline", type="primary"):
             ax_btx_only.set_title("7. Cleaned BTX")
             ax_btx_only.axis('off')
 
-            # Graph 3: Strictly scaled cleaned BTX overlaid with spots
             ax_btx_marked.imshow(img_btx_clean_vis, cmap="gray", vmin=0.0, vmax=1.0, aspect="auto")
             ax_btx_marked.set_title("8. Cleaned BTX + Detected Spots")
             ax_btx_marked.axis('off')
 
-            # Graph 4: Composite Image + All Spots
             ax_comp_marked.imshow(composite_rgb, aspect="auto")
             ax_comp_marked.set_title("9. Composite + All Detected Spots")
             ax_comp_marked.axis('off')
             
-            # Graph 5: Composite Image + NMJ Arrows
             ax_comp_arrows.imshow(composite_rgb, aspect="auto")
             ax_comp_arrows.set_title(f"10. Composite + {BTX_CLASS_EARLY_NMJ} Only")
             ax_comp_arrows.axis('off')

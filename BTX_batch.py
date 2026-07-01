@@ -952,7 +952,6 @@ if run_current or run_all:
             ax_unused_2 = fig.add_subplot(outer[3, 2])
             
             
-            # Graph 6: Roundness KDE (same rows as Kruskal title: ≥MIN pixels, three classes, no Orphaned)
             _roundness_order = list(ROUNDNESS_KRUSKAL_CLASSES)
             df_shape = dataframe_for_roundness_kde_and_kruskal(df_spots)
             if len(df_shape) > 0:
@@ -977,7 +976,6 @@ if run_current or run_all:
             ax_circ_kde.set_ylabel('Probability Density')
             ax_circ_kde.set_xlim(0, 1)
             
-            # Graph 7: Size KDE
             if len(df_spots) > 0:
                 sns.kdeplot(
                     data=df_spots, x='RADIUS', hue='BTX signal class',
@@ -990,7 +988,6 @@ if run_current or run_all:
             ax_size_kde.set_xlabel('Radius (μm)')
             ax_size_kde.set_ylabel('Probability Density')
             
-            # Graph 8: NMJ Innervation Histogram (NMJ class only)
             df_innervation_img = (
                 df_spots[df_spots["BTX signal class"] == BTX_CLASS_EARLY_NMJ]
                 if len(df_spots) > 0
@@ -1005,7 +1002,6 @@ if run_current or run_all:
             ax_overlap_kde.set_xlabel(f'{BTX_CLASS_EARLY_NMJ} Innervation (%)')
             ax_overlap_kde.set_ylabel('Count')
             
-            # Graph 9: Mean Intensity KDE
             if len(df_spots) > 0:
                 _int_vals_img = df_spots['MEAN_INTENSITY'].dropna() if 'MEAN_INTENSITY' in df_spots.columns else pd.Series(dtype=float)
                 _int_max_img = float(_int_vals_img.quantile(0.999)) if len(_int_vals_img) > 0 else None
@@ -1038,7 +1034,6 @@ if run_current or run_all:
                 title_ax=ax_prox_title,
             )
 
-            # Graph 2: Raw and cleaned BTX shown side-by-side for subtraction verification
             # ``aspect='auto'``: default ``equal`` can collapse wide 2×-width panels in ``GridSpec`` + ``tight`` bbox.
             ax_btx_clean.imshow(
                 raw_clean_side_by_side, cmap="gray", vmin=0.0, vmax=1.0, aspect="auto"
@@ -1048,22 +1043,18 @@ if run_current or run_all:
             ax_btx_clean.set_title("6. Raw BTX (L) | Cleaned BTX (R)")
             ax_btx_clean.axis('off')
 
-            # Graph 3: Strictly scaled cleaned BTX only
             ax_btx_only.imshow(img_btx_clean_vis, cmap="gray", vmin=0.0, vmax=1.0, aspect="auto")
             ax_btx_only.set_title("7. Cleaned BTX")
             ax_btx_only.axis('off')
 
-            # Graph 4: Strictly scaled cleaned BTX overlaid with spots
             ax_btx_marked.imshow(img_btx_clean_vis, cmap="gray", vmin=0.0, vmax=1.0, aspect="auto")
             ax_btx_marked.set_title("8. Cleaned BTX + Detected Spots")
             ax_btx_marked.axis('off')
 
-            # Graph 5: Composite Image + All Spots
             ax_comp_marked.imshow(composite_rgb, aspect="auto")
             ax_comp_marked.set_title("9. Composite + All Detected Spots")
             ax_comp_marked.axis('off')
             
-            # Graph 6: Composite Image + NMJ Arrows
             ax_comp_arrows.imshow(composite_rgb, aspect="auto")
             ax_comp_arrows.set_title(f"10. Composite + {BTX_CLASS_EARLY_NMJ} Only")
             ax_comp_arrows.axis('off')
