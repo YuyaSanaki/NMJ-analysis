@@ -1918,6 +1918,54 @@ def proximity_joint_axes(
     return ax_main, ax_kde_x, ax_kde_y
 
 
+def tissue_mask_overlay_rgb(channel_norm, mask, overlay_rgb):
+    """Grayscale channel with a semi-transparent mask tint for tissue-mask QC."""
+    gray = np.clip(np.asarray(channel_norm, dtype=np.float32), 0.0, 1.0)
+    rgb = np.stack([gray, gray, gray], axis=-1)
+    mask_arr = np.asarray(mask, dtype=bool)
+    alpha = 0.45
+    tint = np.array(overlay_rgb[:3], dtype=np.float32)
+    rgb = np.where(mask_arr[..., None], rgb * (1.0 - alpha) + tint * alpha, rgb)
+    return rgb
+
+
+def tissue_mask_verification_side_by_side(
+    img_m_norm,
+    muscle_mask,
+    img_n_norm,
+    neuron_mask,
+):
+    """Muscle and neuron mask overlays concatenated left-to-right (like raw|clean BTX)."""
+    muscle_rgb = tissue_mask_overlay_rgb(img_m_norm, muscle_mask, (0.0, 1.0, 0.0))
+    neuron_rgb = tissue_mask_overlay_rgb(img_n_norm, neuron_mask, (1.0, 0.0, 0.0))
+    return np.concatenate([muscle_rgb, neuron_rgb], axis=1)
+
+
+def tissue_mask_verification_title(
+    *,
+    panel_num=12,
+    m_thresh=None,
+    n_thresh=None,
+    m_thresh_mult=None,
+    n_thresh_mult=None,
+):
+    title = f"{panel_num}. Tissue Masks — Muscle (L, green) | Neuron (R, red)"
+    extras = []
+    if m_thresh is not None:
+        if m_thresh_mult is not None:
+            extras.append(f"Muscle Otsu×{m_thresh_mult:g}={m_thresh:.3g}")
+        else:
+            extras.append(f"Muscle thr={m_thresh:.3g}")
+    if n_thresh is not None:
+        if n_thresh_mult is not None:
+            extras.append(f"Neuron Otsu×{n_thresh_mult:g}={n_thresh:.3g}")
+        else:
+            extras.append(f"Neuron thr={n_thresh:.3g}")
+    if extras:
+        title += f" ({'; '.join(extras)})"
+    return title
+
+
 def _scatter_dataframe_with_clip_jitter(df, sigma_um=0.02, seed=42):
     if df is None or len(df) == 0:
         return df

@@ -1,7 +1,9 @@
 # Neuromuscular Junction (NMJ) Analysis Pipeline
 
-This repository pipline was used in "Self-organization of vascularized muscle from bovine embryonic stem cells".
-AI tools (Cursor and Antigravity) were used to assist with writing codes/documents. The pipline makes a summary PNG file corresponding to each confocal images for BTX staining background subtraction, BTX spot detection, tissue mask, and plots. The authors reviewed, tested, and modified the generated code, and manually verified the results by visual inspection.
+This pipeline was used in *Self-organization of vascularized muscle from bovine embryonic stem cells*.
+AI tools (Cursor and Antigravity) assisted with code and documentation. The authors reviewed, tested, and modified the generated code and manually verified results by visual inspection.
+
+The pipeline processes multi-channel and Z-stacked confocal/Tiff images: Z-projection, BTX background subtraction, spot detection (DoG), muscle/neuron tissue masks (Otsu), spatial BTX classification, per-image QC figures, and batch aggregate summaries with statistics.
 
 A containerized toolkit for detecting, measuring, and classifying BTX-labeled puncta from multi-channel confocal images. Two **Streamlit** apps share the same analysis core:
 
@@ -34,9 +36,9 @@ Extra channels are ignored. Recommended acquisition: 16-bit, ≥ 2000×2000 px, 
 
 ```
 NMJ-analysis/
-├── data/                          # Inputs only (gitignored): images + live channel_mapping_config.json
+├── data/                          # Inputs only (gitignored): images (+ channel_mapping_config.json will be created by this pipeline)
 ├── output/                        # Timestamped run folders (gitignored)
-├── BTX_batch.py                   # Batch Streamlit UI
+├── BTX_batch.py                   # Batch mode Streamlit UI
 ├── BTX.py                         # Single-image Streamlit UI
 ├── nmj_master_dashboard.py        # Aggregate figures, stats, image I/O helpers
 ├── nmj_run_output.py              # output/<timestamp>/ helpers, ZIP downloads
@@ -52,7 +54,7 @@ NMJ-analysis/
 
 ## Quick start
 
-1. Place images in subfolders under `data/`, e.g. `data/Experiment1/slide01.czi`.
+1. Place images in subfolders under `data/`, e.g. `data/Experiment1/slide01.czi` and `data/Experiment2/slide01.czi`..
 2. From the project root:
 
 ```bash
@@ -61,7 +63,7 @@ docker compose --profile batch up --build
 docker compose --profile single up --build
 ```
 
-3. Open the URL printed in the terminal (8503 batch / 8504 single).
+3. Open the URL printed in the terminal (8503 batch / 8504 single). Follow the instruction to procees images.
 4. Stop with `Ctrl+C` or `docker compose down`.
 
 ### Docker memory
@@ -91,9 +93,16 @@ With `docker compose --profile batch up --build`:
 | Background subtraction | Wide Gaussian haze removal on BTX |
 | Muscle / Neuron Threshold Multiplier | Scales Otsu cutoff on muscle and neuron channels (mask size) |
 | Functional NMJ Boundary (µm) | Distance cutoff for BTX class assignment (default 1.0 µm) |
-| Save NMJ_Plot PNGs | Per-image 11-panel figures (memory-heavy) |
+| Save NMJ_Plot PNGs | Per-image 12-panel figures (memory-heavy) |
 
 ---
+
+### Batch Web UI
+
+![Batch UI — channel mapping and detection settings](readme/WebUI1.png)
+
+![Batch UI — run controls and output](readme/WebUI2.png)
+
 
 ## Analysis pipeline
 
@@ -309,7 +318,7 @@ Streamlit shows ZIP and per-file download buttons when a run completes.
 | 0 | 1. Proximity scatter + marginal KDEs | 2. Size KDE | 3. Roundness KDE (3-class Kruskal title) |
 | 1 | 4. early NMJ-like innervation hist | 5. Intensity KDE (spot-pooled MW title) | 6. Raw \| cleaned BTX |
 | 2 | 7. Cleaned BTX | 8. BTX + spots | 9. Composite + all spots |
-| 3 | 10. Composite + early NMJ-like only | 11. BTX density bar | — |
+| 3 | 10. Composite + early NMJ-like only | 11. BTX density bar | 12. Tissue masks (muscle \| neuron Otsu) |
 
 Per-image proximity/intensity titles use **spot-level** tests (exploratory). Use batch aggregate outputs for publication inference.
 

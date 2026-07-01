@@ -41,6 +41,8 @@ from nmj_master_dashboard import (
     roundness_3way_kruskal_title,
     proximity_joint_axes,
     draw_proximity_joint,
+    tissue_mask_verification_side_by_side,
+    tissue_mask_verification_title,
     save_all_folders_summary_png,
     _export_figure_panels_to_pdfs,
     build_aggregate_batch_dashboard_figure,
@@ -1101,7 +1103,21 @@ if run_current or run_all:
             ax_unused_1.set_title(f"11. BTX Density ({SPOT_DENSITY_PER_MM2_LABEL})")
             ax_unused_1.set_ylabel(SPOT_DENSITY_PER_MM2_LABEL)
             ax_unused_1.set_xlabel("")
-            ax_unused_2.axis('off')
+            tissue_mask_vis = tissue_mask_verification_side_by_side(
+                img_m_norm, muscle_mask, img_n_norm, neuron_mask
+            )
+            ax_unused_2.imshow(tissue_mask_vis, aspect="auto")
+            pane_w_mask = tissue_mask_vis.shape[1] // 2
+            ax_unused_2.axvline(x=pane_w_mask - 0.5, color="yellow", linewidth=2.5)
+            ax_unused_2.set_title(
+                tissue_mask_verification_title(
+                    m_thresh=m_thresh,
+                    n_thresh=n_thresh,
+                    m_thresh_mult=m_thresh_mult,
+                    n_thresh_mult=n_thresh_mult,
+                )
+            )
+            ax_unused_2.axis("off")
             
             by_spot_id = df_spots.set_index("SPOT_ID")
             # Plot the overlays

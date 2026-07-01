@@ -29,6 +29,8 @@ from nmj_master_dashboard import (
     total_image_area_um2_from_metadata,
     get_proximity_analysis_title,
     proximity_analysis_results,
+    tissue_mask_verification_side_by_side,
+    tissue_mask_verification_title,
 )
 
 from nmj_run_output import (
@@ -828,9 +830,9 @@ if st.button("🚀 Process Pipeline", type="primary"):
             comp_b = np.zeros_like(img_m_norm)
             composite_rgb = np.stack([comp_r, comp_g, comp_b], axis=-1)
 
-            # Plot Proximity Graph & Images in a perfectly balanced 3x3 grid (9 spots!)
-            fig = plt.figure(figsize=(24, 24))
-            outer = fig.add_gridspec(3, 3, hspace=0.35, wspace=0.35)
+            # Plot proximity graphs and images in a 4x3 grid (tissue-mask QC on row 4).
+            fig = plt.figure(figsize=(24, 30))
+            outer = fig.add_gridspec(4, 3, hspace=0.35, wspace=0.35)
 
             ax_scatter, ax_prox_kde_x, ax_prox_kde_y, ax_prox_title = proximity_joint_axes(
                 fig, outer[0, 0], title_first=True
@@ -840,9 +842,12 @@ if st.button("🚀 Process Pipeline", type="primary"):
             ax_overlap_kde = fig.add_subplot(outer[1, 0])
             ax_intensity_kde = fig.add_subplot(outer[1, 1])
             ax_btx_clean = fig.add_subplot(outer[1, 2])
-            ax_btx_marked = fig.add_subplot(outer[2, 0])
-            ax_comp_marked = fig.add_subplot(outer[2, 1])
-            ax_comp_arrows = fig.add_subplot(outer[2, 2])
+            ax_btx_only = fig.add_subplot(outer[2, 0])
+            ax_btx_marked = fig.add_subplot(outer[2, 1])
+            ax_comp_marked = fig.add_subplot(outer[2, 2])
+            ax_comp_arrows = fig.add_subplot(outer[3, 0])
+            ax_tissue_mask = fig.add_subplot(outer[3, 1])
+            ax_unused = fig.add_subplot(outer[3, 2])
             
             
             # Graph 6: Roundness KDE (≥MIN pixels; NMJ / Aneural / Neuron-associated only — matches batch logic)
@@ -921,20 +926,41 @@ if st.button("🚀 Process Pipeline", type="primary"):
             ax_btx_clean.set_title("6. Raw BTX (L) | Cleaned BTX (R)")
             ax_btx_clean.axis('off')
 
+            ax_btx_only.imshow(img_btx_clean_vis, cmap="gray", vmin=0.0, vmax=1.0, aspect="auto")
+            ax_btx_only.set_title("7. Cleaned BTX")
+            ax_btx_only.axis('off')
+
             # Graph 3: Strictly scaled cleaned BTX overlaid with spots
-            ax_btx_marked.imshow(img_btx_clean_vis, cmap='gray', vmin=0.0, vmax=1.0)
-            ax_btx_marked.set_title("7. Cleaned BTX + Detected Spots")
+            ax_btx_marked.imshow(img_btx_clean_vis, cmap="gray", vmin=0.0, vmax=1.0, aspect="auto")
+            ax_btx_marked.set_title("8. Cleaned BTX + Detected Spots")
             ax_btx_marked.axis('off')
 
             # Graph 4: Composite Image + All Spots
-            ax_comp_marked.imshow(composite_rgb)
-            ax_comp_marked.set_title("8. Composite + All Detected Spots")
+            ax_comp_marked.imshow(composite_rgb, aspect="auto")
+            ax_comp_marked.set_title("9. Composite + All Detected Spots")
             ax_comp_marked.axis('off')
             
             # Graph 5: Composite Image + NMJ Arrows
-            ax_comp_arrows.imshow(composite_rgb)
-            ax_comp_arrows.set_title(f"9. Composite + {BTX_CLASS_EARLY_NMJ} Only")
+            ax_comp_arrows.imshow(composite_rgb, aspect="auto")
+            ax_comp_arrows.set_title(f"10. Composite + {BTX_CLASS_EARLY_NMJ} Only")
             ax_comp_arrows.axis('off')
+
+            tissue_mask_vis = tissue_mask_verification_side_by_side(
+                img_m_norm, muscle_mask, img_n_norm, neuron_mask
+            )
+            ax_tissue_mask.imshow(tissue_mask_vis, aspect="auto")
+            pane_w_mask = tissue_mask_vis.shape[1] // 2
+            ax_tissue_mask.axvline(x=pane_w_mask - 0.5, color="yellow", linewidth=2.5)
+            ax_tissue_mask.set_title(
+                tissue_mask_verification_title(
+                    m_thresh=m_thresh,
+                    n_thresh=n_thresh,
+                    m_thresh_mult=m_thresh_mult,
+                    n_thresh_mult=n_thresh_mult,
+                )
+            )
+            ax_tissue_mask.axis("off")
+            ax_unused.axis("off")
             
             # Plot the overlays
             for index, blob in enumerate(blobs):
