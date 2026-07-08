@@ -14,7 +14,7 @@ A containerized toolkit for detecting, measuring, and classifying BTX-labeled pu
 
 Plain `docker compose up` (no profile) starts **neither** app.
 
-![Example image](readme/iamge.png)
+![Example image](readme/image.png)
 
 ---
 
@@ -54,7 +54,7 @@ NMJ-analysis/
 
 ## Quick start
 
-1. Place images in subfolders under `data/`, e.g. `data/Experiment1/slide01.czi` and `data/Experiment2/slide01.czi`..
+1. Place images in subfolders under `data/`, e.g. `data/Experiment1/slide01.czi` and `data/Experiment2/slide01.czi`.
 2. From the project root:
 
 ```bash
@@ -63,7 +63,7 @@ docker compose --profile batch up --build
 docker compose --profile single up --build
 ```
 
-3. Open the URL printed in the terminal (8503 batch / 8504 single). Follow the instruction to procees images.
+3. Open the URL printed in the terminal (8503 batch / 8504 single). Follow the instruction to process images.
 4. Stop with `Ctrl+C` or `docker compose down`.
 
 ### Docker memory
