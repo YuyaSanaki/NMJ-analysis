@@ -28,3 +28,4 @@ __pycache__/
 
 # Local scratch file (ignored only while untracked). If Git still tracks it: `git rm --cached ToDo.txt`
 ToDo.txt
+/.data/
