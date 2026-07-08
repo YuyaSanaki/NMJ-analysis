@@ -17,11 +17,10 @@ __pycache__/
 .venv/
 .env
 
-# Whole `data/` tree (datasets, plots, CZIs, CSVs). `data/` ignores the directory and everything
-# under it (prefer this over `data/*`, which only matches one path level on some Git versions).
-# Root-level patterns like `0714*` / `*HF*` are unnecessary once `data/` exists and are risky
-# (`*HF*` can match unrelated names).
-/data/
+# Ignore everything in the data/ folder recursively except directories and .gitkeep files
+/data/**/*
+!/data/**/
+!/data/**/.gitkeep
 
 # Analysis run outputs (timestamped folders; configs + CSV/PNG/PDF artifacts)
 /output/
