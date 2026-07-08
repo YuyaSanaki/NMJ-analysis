@@ -165,6 +165,9 @@ class NmjPlotContext:
     n_thresh_mult: float
     distance_threshold_um: float
     zone_densities: tuple[float, float, float, float]
+    zone_areas: tuple[float, float, float, float]
+    threshold_used: float
+    total_image_area_um2: float
 
 
 def analyze_image_for_nmj_plot(
@@ -391,10 +394,14 @@ def analyze_image_for_nmj_plot(
         n_thresh_mult=float(n_thresh_mult),
         distance_threshold_um=float(distance_threshold_um),
         zone_densities=(dens_nmj, dens_m, dens_n, dens_o),
+        zone_areas=(area_nmj_um2, area_m_um2, area_n_um2, area_o_um2),
+        threshold_used=float(threshold_used),
+        total_image_area_um2=float(total_image_area_um2),
     )
 
 
-def save_nmj_plot_png(ctx: NmjPlotContext, out_path: str) -> None:
+def build_nmj_plot_figure(ctx: NmjPlotContext):
+    """Build the 12-panel per-image NMJ figure and return it (caller owns saving/closing)."""
     df_spots = ctx.df_spots
     blobs = ctx.blobs
     czi_file = ctx.czi_file
@@ -613,6 +620,12 @@ def save_nmj_plot_png(ctx: NmjPlotContext, out_path: str) -> None:
                 arrowprops=dict(arrowstyle="-|>", color="white", lw=1.5),
             )
 
+    return fig
+
+
+def save_nmj_plot_png(ctx: NmjPlotContext, out_path: str) -> None:
+    """Render the per-image NMJ figure and write it to ``out_path``."""
+    fig = build_nmj_plot_figure(ctx)
     fig.savefig(out_path, bbox_inches="tight")
     fig.clf()
     plt.close(fig)
